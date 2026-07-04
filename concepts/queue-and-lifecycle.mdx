@@ -1,7 +1,7 @@
 ---
-title: "Queue Format and Item Lifecycle in PA_PVP"
+title: "PA_PVP [QUEUE] Block Format and Item Lifecycle Guide"
 sidebarTitle: "Queue & Lifecycle"
-description: "The [QUEUE] block is the machine scan surface in every PA_PVP output. Each row encodes an item's verdict, state, impact, urgency, gate, and next step token."
+description: "The [QUEUE] block is the primary scan surface in every PA_PVP output. Each row encodes verdict, state, impact, urgency, gate, and next step token."
 ---
 
 Every valid PA_PVP decision run emits exactly one machine code block. Inside that block, `[QUEUE]` is the primary operational scan surface — a compact, structured roster of all items in the batch. Each row encodes the full disposition of one item in a single parseable line. Downstream executors, peer validation agents, and automated tooling all read `[QUEUE]` first to determine what to act on, what to park, and what to ignore.

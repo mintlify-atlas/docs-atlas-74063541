@@ -1,5 +1,5 @@
 ---
-title: "Batch Processing and Item Dependencies in PA_PVP"
+title: "PA_PVP Batch Input and Execution-Order Dependencies"
 sidebarTitle: "Batch & Dependencies"
 description: "Submit multiple items in one PA_PVP run with a batch header, and declare execution-order dependencies between items using the depends_on field."
 ---
@@ -43,7 +43,7 @@ The kernel enforces a strict coverage contract over every run.
     Every id in `expected_ids` must have a corresponding `[ITEM id=...]` block emitted in the output.
   </Step>
   <Step title="Fail-closed on violation">
-    If any coverage violation is detected, the entire output is marked **INVALID**. `[PANEL]` will contain:
+    If `CopyPasteMode=NO_LOOK` (the default), any coverage violation makes the **entire output INVALID**. If `CopyPasteMode` is not `NO_LOOK`, the kernel still prefers INVALID unless partial progress is explicitly allowed by the active route. When output is INVALID, `[PANEL]` will contain:
     - `OutputValidity: INVALID`
     - `InvalidReason: BATCH_COVERAGE`
     - `CoverageDiff: missing={...}; extra={...}`
@@ -53,7 +53,7 @@ The kernel enforces a strict coverage contract over every run.
 </Steps>
 
 <Note>
-The `PP_CLOSED_THIS_RUN` counter in `[PANEL]` tracks how many items transitioned to a terminal state (`CLOSED` or `DISCARDED`) during the current run. Use it to quickly scan how much forward progress was made in a single pass.
+The `PP_CLOSED_THIS_RUN` counter in `[PANEL]` (under `PingPongCounts`) tracks how many items **that had `<<<PREV>>>`** transitioned to a terminal state (`CLOSED` or `DISCARDED`) during the current run. Items without a prior `<<<PREV>>>` do not contribute to this count even if they become terminal.
 </Note>
 
 ## The depends_on field

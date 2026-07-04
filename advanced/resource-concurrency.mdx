@@ -56,7 +56,7 @@ Each item may declare the resources it consumes if it becomes `ACTIVE`, using th
 
     Each demoted item:
     - Changes verdict to `DO LATER` and `new_state` to `STANDBY`
-    - Receives `trigger=DEPENDENCY_BLOCK`
+    - Receives `trigger=DEPENDENCY_BLOCK` (unless a higher-priority trigger already governs the item)
     - Gets Step 1: "Wait for resource availability (`RID`)" or an explicit split/sequence plan that reduces demand or serializes execution
   </Step>
 </Steps>

@@ -1,7 +1,7 @@
 ---
-title: "Gates, Triggers, and Dominant Gate Routing"
+title: "PA_PVP Gate Vocabulary, Triggers, and Dominant Gate Routing"
 sidebarTitle: "Gates & Triggers"
-description: "PA_PVP assigns one dominant gate per item to route it through the correct governance path. Gates encode the primary reason an item is contested, blocked, or risky."
+description: "PA_PVP assigns one dominant gate per item to route it through the correct governance path. Gates encode why an item is contested, blocked, or risky."
 ---
 
 When PA_PVP processes an item it may detect that multiple governance rules are active at once — a probe is running, a dependency is unresolved, and the decision score is near a threshold boundary. Rather than letting these conditions pile up into ambiguous output, the kernel reduces them to a single `dominant_gate` per item. The dominant gate is the primary diagnostic and routing signal: it tells downstream executors and peer agents the single most important reason an item is constrained, and it determines how the item behaves in `[QUEUE]`, in `[STEPS]`, and in the `ds` execution mode field.

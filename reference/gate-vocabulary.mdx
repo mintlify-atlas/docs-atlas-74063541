@@ -1,5 +1,5 @@
 ---
-title: "PA_PVP Gate Vocabulary and Trigger Reference"
+title: "PA_PVP Gate Tokens, Triggers, and Precedence Reference"
 sidebarTitle: "Gate Vocabulary"
 description: "Complete reference for all PA_PVP gate tokens, their trigger conditions, and how they affect verdict routing, execution mode, and output structure."
 ---
@@ -187,6 +187,8 @@ Trigger tokens are the raw condition labels set on items during kernel execution
 | `DUPLICATE_ID_REJECTED` | `DEPENDENCY_BLOCK` | Second occurrence of a duplicate id within the same batch was rejected. |
 | `REOPEN_BLOCKED_BUDGET` | `DEPENDENCY_BLOCK` | Reopen blocked because reopen_total >= 1 in PREV (budget cap reached). |
 | `REOPEN_BLOCKED_NO_DELTA` | `DEPENDENCY_BLOCK` | Reopen blocked because no `<<<NEW_EVIDENCE>>>` or `<<<CHANGE>>>` was provided. |
+| `MISSING_SOURCE_INPUT` | `DEPENDENCY_BLOCK` | A step or claim depends on a missing artifact, diff, hash, file target, or source block that cannot be reconstructed. |
+| `MULTI_CRITICAL_DRIVER_SPLIT` | `REDESIGN_TRIGGER` | Two or more independent HIGH-impact drivers exist; the item is split into separate items, each with one critical driver. |
 | `SCORE_TRIAGE` | `SCORE_TRIAGE` | Score/impact is the only active routing reason; no governance trigger is active. |
 
 <Note>

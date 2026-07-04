@@ -1,7 +1,7 @@
 ---
-title: "AI-to-AI Adversarial Peer Validation with PA_PVP"
+title: "PA_PVP AI-to-AI Adversarial Peer Validation Protocol"
 sidebarTitle: "AI-to-AI Validation"
-description: "Use two LLMs running PA_PVP to challenge and refine each other's decisions through a structured adversarial delta-only ping-pong loop."
+description: "Run two LLMs in an adversarial PA_PVP loop: one proposes, one challenges. Each iteration emits one BREAK and one PATCH until verdicts stabilize."
 ---
 
 PA_PVP is designed for AI-to-AI peer validation where one LLM proposes a decision and a second challenges it. Each challenge is bounded: one broken assumption and one minimal patch per iteration. The loop runs until the verdict stabilizes, the item is discarded, or a human checkpoint intervenes. Because every exchange is machine state, the entire adversarial history is reproducible and auditable.

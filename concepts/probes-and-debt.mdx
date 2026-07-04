@@ -1,7 +1,7 @@
 ---
-title: "Reality Probes and Falsification Debt in PA_PVP"
+title: "PA_PVP Reality Probes and Falsification Debt Tracking"
 sidebarTitle: "Probes & Debt"
-description: "PA_PVP uses reality probes to test critical drivers under uncertainty and tracks falsification debt when evidence is insufficient to close a decision cleanly."
+description: "PA_PVP uses reality probes to test critical drivers under uncertainty and tracks falsification debt when evidence is insufficient to close a decision."
 ---
 
 When a decision's critical driver has low confidence, PA_PVP does not force a verdict through on blind assumptions. Instead it pushes the item into a `PROBING` sub-state and launches a reality probe — an adversarially designed test specifically intended to falsify the critical driver, not confirm it. If the driver survives the probe, confidence rises. If the probe falsifies it, the Falsification Principle fires and the item is discarded. When no adequate probe is in place and confidence remains low, the kernel opens explicit falsification debt against the driver so that the risk is visible and tracked, not hidden.

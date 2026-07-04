@@ -1,7 +1,7 @@
 ---
-title: "Generating PA_PVP Reports from Decision Snapshots"
+title: "PA_PVP REPORT and REPORT LITE: Read-Only Snapshot Views"
 sidebarTitle: "Reports"
-description: "REPORT and REPORT LITE are read-only render commands that produce human-readable summaries derived from an existing PA_PVP snapshot without changing any state."
+description: "REPORT and REPORT LITE are read-only render passes over a PA_PVP snapshot. They produce no machine state and change no verdicts, gates, or steps."
 ---
 
 Reports are derived views over an existing PA_PVP snapshot. They are read-only rendering passes — they never change verdicts, gates, triggers, steps, or any facts. They produce no machine state, no code block, and no `STATE: DECISION.*` header. Use them to share a human-readable view with stakeholders, review a prior run before continuing, or check the DO NOW list after a complex batch.

@@ -117,6 +117,14 @@ Prepend a batch header to set governance defaults for every item in the batch. A
 <<<B keep_open=NO expire_days=30 exec_capability=NO_RUNTIME close_policy=SIM_OK ssot_scale=MIN resource_pool=>>>
 ```
 
+<ParamField path="keep_open" type="YES | NO">
+  When `YES`, expiry is disabled for every item in the batch unless overridden per item. Default `NO`.
+</ParamField>
+
+<ParamField path="expire_days" type="integer">
+  Batch-level expiry fallback. Applied when an individual item does not declare its own `expire_days` and no domain default applies. Default `30`.
+</ParamField>
+
 <ParamField path="exec_capability" type="NO_RUNTIME | RUNTIME_OK">
   `NO_RUNTIME` (default) — the kernel operates without live execution; simulated closures are allowed and labeled. `RUNTIME_OK` — real execution is available.
 </ParamField>

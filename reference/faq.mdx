@@ -1,7 +1,7 @@
 ---
-title: "PA_PVP Frequently Asked Questions"
+title: "PA_PVP: Frequently Asked Questions and Common Scenarios"
 sidebarTitle: "FAQ"
-description: "Answers to common questions about using PA_PVP, including how to handle invalid outputs, what to do when verdicts seem wrong, and how to extend the protocol."
+description: "Answers to common PA_PVP questions: invalid outputs, PROBING loops, reopen rules, AskUser eligibility, and continuing a run from a prior snapshot."
 ---
 
 This page answers the most common questions about using and extending PA_PVP. Whether you are running your first decision loop or debugging an unexpected PROBING state, the answers here reflect the actual kernel rules in `PA_PVP_full_v9.9.0_canonical.txt` — the authority surface for all execution semantics.
@@ -105,7 +105,7 @@ This page answers the most common questions about using and extending PA_PVP. Wh
   - A probe with `context_match = NO` or `UNKNOWN`.
   - Ignoring the debt field and proceeding.
 
-  The kernel tracks debt through `[DERIVED].reopen_total` and `[PANEL].Governance` and will re-evaluate debt on every ping-pong run.
+  The kernel tracks debt through `[ITEM_PANEL].falsification_debt` and `[PANEL].Governance` and will re-evaluate debt on every ping-pong run.
 </Accordion>
 
 <Accordion title="My item keeps getting PROBING and never closes. What's wrong?">

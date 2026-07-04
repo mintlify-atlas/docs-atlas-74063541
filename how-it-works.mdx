@@ -1,5 +1,5 @@
 ---
-title: "How PA_PVP Works: Decision Loop and State Machine"
+title: "How PA_PVP Works: Contract, Loop, and Output Structure"
 sidebarTitle: "How It Works"
 description: "PA_PVP applies a deterministic behavioral contract to turn uncertain situations into forced verdicts, executable steps, and resumable state snapshots."
 ---
@@ -112,7 +112,7 @@ No manual cutting or editing of the previous output is required. The only rule i
 PA_PVP scales output by the state and risk profile of each item, not by a fixed verbosity setting.
 
 - **`MIN_SURFACE`** is used for low-impact items or DIY-profile decisions. The output stays short: `[PANEL]`, `[QUEUE]`, and a compact item block. Small decisions do not produce heavyweight output by default.
-- **Full (DEBUG) structure** expands automatically when an item is contested (`contested=YES`), has an active dominant gate (anything other than `NONE`), or enters `PROBING` state. The expanded structure includes `[ARTIFACT_AUDIT]`, `[PROBE_LOG]`, `[DERIVED]` counters, and `[DELTA]` break-and-patch cycles as applicable.
+- **Full (DEBUG) structure** expands automatically when an item is contested (`contested=YES`), has an active dominant gate (anything other than `NONE`), or `ssot_scale=DEBUG` is set in the batch header. The expanded structure adds `[DECISION_MODEL]`, `[EVIDENCE_BINDING]`, `[DATA_ACQUISITION]`, `[REVIEW]`, `[PROBE_LOG]` (conditional), and `[ARTIFACT_AUDIT]` (for `ARTIFACT`/`TARGET` modes) to the per-item block.
 
 You can force full structure for all items on a run by setting `ssot_scale=DEBUG` in the optional batch header (`<<<B ... ssot_scale=DEBUG>>>`). The default is `MIN`.
 

@@ -1,7 +1,7 @@
 ---
-title: "Running the PA_PVP Ping-Pong Decision Loop"
+title: "PA_PVP Ping-Pong Loop: Continuing Decisions Across Runs"
 sidebarTitle: "Ping-Pong Loop"
-description: "PA_PVP is designed to run multiple times on the same decision. Paste a prior output back as input and the kernel continues delta-only from the previous state."
+description: "Paste a prior PA_PVP output back as input and the kernel continues delta-only from the exact previous state, no manual editing required."
 ---
 
 PA_PVP is stateful by design. Each run produces a machine snapshot you can paste back as input, and the kernel picks up exactly where it left off — advancing steps, simulating outcomes, updating verdicts, and emitting only what changed. You never restart from zero unless you want to.
@@ -89,10 +89,12 @@ Do not use a prior output as SNAPSHOT-AS-INPUT if `[PANEL]` contains:
 OutputValidity: INVALID
 ```
 
-Invalid output is **diagnostic only**. Recovering snapshot state from it is blocked by the kernel's Invalid Output Consumer Contract. There are two invalidation reasons:
+Invalid output is **diagnostic only**. Recovering snapshot state from it is blocked by the kernel's Invalid Output Consumer Contract. There are four invalidation reasons:
 
 - **`BATCH_COVERAGE`** — one or more input ids were missing from the output, or extra ids appeared that were not introduced by an explicit split.
 - **`CODE_BLOCK_PURITY`** — forbidden content (narrative, explanations, apologies) appeared inside the machine code block.
+- **`PREV_SURFACE`** — the delta-only output surface contract was violated for a `<<<PREV>>>` item.
+- **`OTHER`** — fallback token for any other uncategorized invalidation condition.
 
 If you receive an invalid output, diagnose the issue and start a fresh run rather than pasting the invalid output back.
 

@@ -1,7 +1,7 @@
 ---
 title: "PA_PVP Output Format: Machine Block and Human Table"
 sidebarTitle: "Output Format"
-description: "Every PA_PVP run produces exactly one machine code block containing the decision state and a derived human table for scanning. Only the code block is machine state."
+description: "Every PA_PVP decision run emits one machine code block and a derived human table. The code block is the only machine state; the table is for scanning."
 ---
 
 Every PA_PVP decision run produces exactly two output surfaces: a single machine code block and a derived human table. The code block is the source of truth — it is the state you paste back on the next run. The human table is a scan-friendly rendering derived from the code block; it adds no new semantics and is never used as machine input.
@@ -61,20 +61,23 @@ When `[PANEL]` contains `OutputValidity: INVALID`, `[USER_PANEL]` is reduced to 
 | Field | Description |
 |---|---|
 | `Protocol` | Always `PA_PVP`. |
+| `SSOT_STATUS` | Compact active-module manifest listing all kernel modules as `MODULE=ACTIVE` or `MODULE=ENFORCED_*`. |
+| `interaction_ssot` | Contract governing interaction-level behavior. Default: `PA_PVP`. Allowed values: `PA_PVP`, `ADAM`, `NONE`. |
+| `decision_ssot` | Contract governing decision-kernel semantics. Default: `PA_PVP`. Allowed values: `PA_PVP`, `ADAM`, `NONE`. |
 | `ExecCapability` | `NO_RUNTIME` or `RUNTIME_OK` — from `<<<B exec_capability=...>>>`, default `NO_RUNTIME`. |
 | `ClosePolicy` | `SIM_OK` or `REAL_ONLY` — from `<<<B close_policy=...>>>`, default `SIM_OK`. |
 | `SSOTScale` | `MIN` or `DEBUG` — from `<<<B ssot_scale=...>>>`, default `MIN`. |
 | `AskUserMode` | `NONE` or `ALLOW` — derived from the `AskUser` contract switch, default `NONE`. |
+| `AskUser` | Default `NONE`. When `AskUserMode=ALLOW`, may be one minimal evidence request (`<id>: <request>`). |
 | `CopyPasteMode` | Default `NO_LOOK` — users can paste the whole prior output as input without manual editing. |
-| `SSOT_STATUS` | Compact active-module manifest listing all kernel modules as `MODULE=ACTIVE` or `MODULE=ENFORCED_*`. |
 
-`OutputValidity` is **only present when the output is invalid**. For valid outputs, omit it. When present:
+`OutputValidity` is **only present when the output is invalid**. For valid outputs, omit it entirely. When present:
 
 | Invalid field | Description |
 |---|---|
 | `OutputValidity` | `INVALID` |
-| `InvalidReason` | One of: `BATCH_COVERAGE`, `CODE_BLOCK_PURITY`, `PREV_SURFACE`, or `OTHER`. |
-| `CoverageDiff` | Structured diff `missing={...}; extra={...}` — only present when `InvalidReason=BATCH_COVERAGE`. |
+| `InvalidReason` | Exactly one of: `BATCH_COVERAGE`, `CODE_BLOCK_PURITY`, `PREV_SURFACE`, or `OTHER`. |
+| `CoverageDiff` | Structured diff `missing={...}; extra={...}` — only present when `InvalidReason=BATCH_COVERAGE`. Omit for all other reasons. |
 
 ## [QUEUE]
 
@@ -169,9 +172,11 @@ After the human table, additional derived-only blocks may appear. These are rend
 
 When `[PANEL]` contains `OutputValidity: INVALID`, the output is diagnostic only. The normal output structure exception applies: `[QUEUE]` and `[ITEM id=...]` blocks are omitted. The code block contains only `STATE: DECISION.TEST.FINAL`, `[USER_PANEL]`, and `[PANEL]`.
 
-Two invalidation reasons:
+There are four invalidation reasons:
 
 - **`BATCH_COVERAGE`**: one or more input ids are missing from `[QUEUE]` or `[ITEM id=...]`, or extra ids appear that were not introduced by an explicit split.
 - **`CODE_BLOCK_PURITY`**: forbidden content (narrative, explanations, draft prose, diff bodies, rationale paragraphs) appeared inside the single machine code block.
+- **`PREV_SURFACE`**: the delta-only output surface contract was violated (content outside the allowed delta blocks was emitted for a `<<<PREV>>>` item).
+- **`OTHER`**: fallback token for any other uncategorized invalidation condition.
 
 When you receive an invalid output, treat it as a diagnostic signal only. Do not reuse it as `<<<PREV>>>` and do not recover snapshot state from it. Start a fresh run or diagnose the coverage or purity issue before continuing.
