@@ -1,0 +1,96 @@
+---
+title: "Resource Concurrency and Capacity Constraints in PA_PVP"
+sidebarTitle: "Resource Concurrency"
+description: "Declare a resource pool in the batch header and item-level resource usage to prevent PA_PVP from marking more items DO NOW than available capacity allows."
+---
+
+When items in the same batch compete for a limited shared resource — engineering bandwidth, budget, GPU time, or attention — PA_PVP uses capacity-aware scheduling to prevent overload. You declare the available pool in the batch header and each item's demand in its wrapper. The kernel then resolves conflicts automatically, demoting lower-priority items to `DO LATER` until every resource constraint is satisfied.
+
+<Tip>
+`resource_pool` is entirely optional. If you omit it from the batch header, no capacity constraints are applied and all items are scheduled based solely on verdict and priority.
+</Tip>
+
+## Declaring a resource pool
+
+Add `resource_pool` to the `<<<B>>>` batch header. Each token is `<RID>:<CAPACITY_INT>`, where `RID` is a short closed-vocabulary identifier.
+
+```text
+<<<B keep_open=NO expire_days=30 exec_capability=NO_RUNTIME close_policy=SIM_OK ssot_scale=MIN resource_pool=ENG:2,MONEY:1>>>
+```
+
+This declares:
+- `ENG` (engineering): 2 units available
+- `MONEY` (budget): 1 unit available
+
+<Note>
+RID vocabulary is closed — use only resource identifiers that were declared in `resource_pool`. Do not invent new RIDs at the item level. Examples from the kernel: `ENG`, `MONEY`, `ATTENTION`, `GPU`.
+</Note>
+
+## Declaring item resource usage
+
+Each item may declare the resources it consumes if it becomes `ACTIVE`, using the `uses` field in its `<<<I>>>` wrapper.
+
+```text
+<<<I id=E1 title="feature build" keep_open=NO expire_days=30 depends_on= uses=ENG:1 reversibility=>>>
+```
+
+`uses=ENG:1` means this item will consume 1 unit of the `ENG` resource if it receives verdict `DO NOW` and transitions to `ACTIVE`. An item with no `uses` declaration contributes 0 units of demand for every RID.
+
+## How capacity resolution works
+
+<Steps>
+  <Step title="Identify candidate ACTIVE items">
+    Consider only the items that would be `DO NOW` (new_state=`ACTIVE`) before the resource rule is applied. Items already routed to `DO LATER` or `DISCARD` are not candidates.
+  </Step>
+  <Step title="Compute demand per RID">
+    For each declared RID: `demand(RID)` = sum of units requested by all candidate ACTIVE items for that RID (items with no `uses` for a given RID contribute 0). If `demand(RID) ≤ capacity(RID)` for all RIDs, no action is needed.
+  </Step>
+  <Step title="Detect overload">
+    If `demand(RID) > capacity(RID)` for any RID, an overload exists and demotion is required.
+  </Step>
+  <Step title="Demote until overload clears">
+    Demote ACTIVE items in reverse priority order — lowest-priority items are demoted first — until all RID overloads are cleared. Priority order (keep ACTIVE first):
+    1. `impact`: HIGH kept first, then MED, then LOW
+    2. `urgency`: HIGH kept first, then MED, then LOW
+    3. `id` lexical order (stable tie-break)
+
+    Each demoted item:
+    - Changes verdict to `DO LATER` and `new_state` to `STANDBY`
+    - Receives `trigger=DEPENDENCY_BLOCK`
+    - Gets Step 1: "Wait for resource availability (`RID`)" or an explicit split/sequence plan that reduces demand or serializes execution
+  </Step>
+</Steps>
+
+## Example: ENG overload
+
+Suppose the batch declares `resource_pool=ENG:2` and three items each declare `uses=ENG:1`:
+
+<Tabs>
+  <Tab title="Before resolution">
+    | Item | Impact | Urgency | uses  | Pre-resolution verdict |
+    |------|--------|---------|-------|------------------------|
+    | E1   | HIGH   | HIGH    | ENG:1 | DO NOW                 |
+    | E2   | HIGH   | MED     | ENG:1 | DO NOW                 |
+    | E3   | LOW    | LOW     | ENG:1 | DO NOW                 |
+
+    Total `ENG` demand = 3 units. Capacity = 2 units. **Overload by 1 unit.**
+  </Tab>
+  <Tab title="After resolution">
+    | Item | Impact | Urgency | uses  | Final verdict | Trigger           |
+    |------|--------|---------|-------|---------------|-------------------|
+    | E1   | HIGH   | HIGH    | ENG:1 | DO NOW        | —                 |
+    | E2   | HIGH   | MED     | ENG:1 | DO NOW        | —                 |
+    | E3   | LOW    | LOW     | ENG:1 | DO LATER      | DEPENDENCY_BLOCK  |
+
+    E3 is demoted because it has the lowest impact and urgency. `ENG` demand is now 2 = capacity. Overload cleared.
+  </Tab>
+</Tabs>
+
+E3's Step 1 will read: "Wait for resource availability (ENG)" or a plan to split/sequence its work so it does not compete with E1 and E2 simultaneously.
+
+## Boundary rules
+
+- Do not invent resource ids. Use only the RIDs declared in `resource_pool`.
+- Do not invent units. Use only the `uses` tokens declared in item wrappers.
+- `DEPENDENCY_BLOCK` is the only trigger used for resource-driven demotion. No new trigger tags are introduced.
+- A higher-priority trigger already governing an item is not overwritten by `DEPENDENCY_BLOCK`.

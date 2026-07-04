@@ -1,0 +1,178 @@
+---
+title: "PA_PVP Input Format: Wrapping Items and Setting Options"
+sidebarTitle: "Input Format"
+description: "Structure PA_PVP inputs with item wrappers, batch headers, input modes, and optional evidence injection to control how decisions are processed."
+---
+
+PA_PVP accepts both plain-language descriptions and formally wrapped items. You can start with a rough description of your decision, plan, or artifact and the kernel will parse it directly. For tighter control over expiry, dependencies, resource usage, and reversibility, use the structured item wrapper syntax described below. Both forms produce a full machine snapshot you can paste back in on the next run.
+
+## Plain-language input
+
+The simplest way to start is to describe what you need to decide and ask for PA_PVP output. The kernel parses your description, applies the PLAN mode fail-fast SNR gate to check for a goal state and hard constraint, and produces a full verdict with `[NEXT]` action and machine snapshot.
+
+```text
+Use PA_PVP on these findings and give me the next action.
+```
+
+```text
+I have two viable options and no clear winner. Use PA_PVP to get a verdict.
+```
+
+```text
+I'm stuck between a safe option and a risky one. Help me decide what moves next.
+```
+
+```text
+This plan feels plausible but fragile. Use PA_PVP to test it.
+```
+
+```text
+Give me PA_PVP output for this.
+```
+
+You can start messy. The kernel will derive minimal specs automatically in the default `NO_LOOK` copy-paste mode and continue without asking you to fill in a template.
+
+## The item wrapper
+
+Wrap an item explicitly when you want to assign a stable `id`, set expiry policy, declare dependencies, or mark reversibility. The wrapper opens with `<<<I ...>>>`, contains a mode block, and closes with `<<<END>>>`.
+
+```text
+<<<I id=E1 title="short title" keep_open=NO expire_days=30 depends_on= uses= reversibility=>>>
+...payload...
+<<<END>>>
+```
+
+<ParamField path="id" type="string" required>
+  Short, stable identifier for this item. Used for dependency references, ping-pong continuity, and batch coverage checks. Required — items missing an `id` are marked `INVALID_ITEM` and skipped without blocking the rest of the batch.
+</ParamField>
+
+<ParamField path="title" type="string">
+  Human-readable label shown in `[USER_PANEL]` and the human table. Has no effect on kernel routing.
+</ParamField>
+
+<ParamField path="keep_open" type="YES | NO">
+  When `YES`, expiry is disabled for this item and it never transitions to `EXPIRED`. When `NO` (default), the item expires after `expire_days` days of inactivity in `STANDBY`.
+</ParamField>
+
+<ParamField path="expire_days" type="integer">
+  Days before a `STANDBY` item expires. Default is `30` if no domain default applies. Resolution order: per-item value → batch value → domain type default → fallback `30`. Domain defaults: Chaotic = 1 day, Probabilistic = 7 days, Complex = 60 days, Deterministic = 365 days.
+</ParamField>
+
+<ParamField path="depends_on" type="comma-separated ids">
+  Item ids this item depends on. Dependencies are execution-order constraints, not automatic verdict blockers. If any listed dependency is not yet `CLOSED` or `DISCARDED`, Step 1 priority applies and the item stays ping-pong open.
+</ParamField>
+
+<ParamField path="uses" type="resource tokens">
+  Resource usage tokens in `RID:UNITS` format, e.g. `ENG:1` or `ENG:1,MONEY:2`. Used for resource concurrency resolution against the batch `resource_pool`. Missing `uses` counts as zero.
+</ParamField>
+
+<ParamField path="reversibility" type="REVERSIBLE | COSTLY_REVERSIBLE | IRREVERSIBLE">
+  Declares the reversibility of the decision. `IRREVERSIBLE` forces `REAL_ONLY` close policy for this item — it cannot close as simulated. Omit if not applicable.
+</ParamField>
+
+## Input modes
+
+Each wrapped item uses exactly one mode block. Unwrapped plain-language input is routed as PLAN mode by default.
+
+<Tabs>
+  <Tab title="PLAN">
+    Use PLAN mode for plans, options lists, or decisions with multiple steps.
+
+    ```text
+    <<<PLAN>>>
+    - bullet list of actions/options OR numbered steps
+    ```
+
+    The kernel enforces the PLAN fail-fast SNR gate before any review: if the input lacks a clear goal state or hard constraint, the gate fires. In `CopyPasteMode=NO_LOOK` (the default) or when `AskUserMode=NONE`, the kernel auto-derives minimal specs as `SIMULATED` — a `Goal state`, `System boundary`, and `Hard constraint` — and continues without stopping. If `fail_fast_count` reaches 2 for the same id, the item is discarded with `trigger=FAIL_FAST_CUT`.
+  </Tab>
+  <Tab title="ARTIFACT">
+    Use ARTIFACT mode to submit a prompt, file, protocol, code snippet, document, or other artifact for structural audit and optimization.
+
+    ```text
+    <<<ARTIFACT>>>
+    <prompt/file/protocol/code/doc/etc>
+    ```
+
+    The kernel applies the ARTIFACT AUDIT CONTRACT and emits an `[ARTIFACT_AUDIT]` block for the item. In delta-only mode (when `<<<PREV>>>` exists), audit content is serialized inside `[DELTA][PATCH]` instead of a separate `[ARTIFACT_AUDIT]` block.
+  </Tab>
+  <Tab title="TOOL + TARGET">
+    Use TARGET ANALYSIS mode to audit one artifact against a specific tool, standard, or checklist.
+
+    ```text
+    <<<TOOL>>>
+    <the analysis tool / standard / checklist>
+    <<<TARGET>>>
+    <the target artifact to audit/optimize>
+    ```
+
+    The tool audits the target. Roles do not invert — the tool is always the evaluator and the target is always the subject.
+  </Tab>
+</Tabs>
+
+## The batch header
+
+Prepend a batch header to set governance defaults for every item in the batch. All fields are optional and fall back to their defaults when omitted.
+
+```text
+<<<B keep_open=NO expire_days=30 exec_capability=NO_RUNTIME close_policy=SIM_OK ssot_scale=MIN resource_pool=>>>
+```
+
+<ParamField path="exec_capability" type="NO_RUNTIME | RUNTIME_OK">
+  `NO_RUNTIME` (default) — the kernel operates without live execution; simulated closures are allowed and labeled. `RUNTIME_OK` — real execution is available.
+</ParamField>
+
+<ParamField path="close_policy" type="SIM_OK | REAL_ONLY">
+  `SIM_OK` (default) — items may close as simulated when real evidence is unavailable. `REAL_ONLY` — closure requires real, historical, or experimental evidence; items park in `STANDBY` with `trigger=CLOSE_BLOCKED_REAL_ONLY` if evidence is missing.
+</ParamField>
+
+<ParamField path="ssot_scale" type="MIN | DEBUG">
+  `MIN` (default) — emit the minimal item structure for items without `<<<PREV>>>`. `DEBUG` — emit full item structure including `[DECISION_MODEL]`, `[EVIDENCE_BINDING]`, `[DATA_ACQUISITION]`, `[ALTERNATIVE]`, and `[REVIEW]` blocks.
+</ParamField>
+
+<ParamField path="resource_pool" type="resource tokens">
+  Capacity tokens in `RID:CAPACITY` format, e.g. `ENG:2,MONEY:1`. Defines the maximum concurrent units available per resource. Used to resolve `DO NOW` conflicts when total demand exceeds capacity — lower-priority items are demoted to `DO LATER`.
+</ParamField>
+
+## Previous state (`<<<PREV>>>`)
+
+Inject per-item previous state explicitly using `<<<PREV>>>`. This is the precise alternative to SNAPSHOT-AS-INPUT when you want to pass state for a specific item without pasting the entire prior output.
+
+```text
+<<<I id=E1 title="my item" keep_open=NO expire_days=30 depends_on= uses= reversibility=>>>
+<<<PLAN>>>
+- updated plan step
+<<<PREV>>>
+[ITEM id=E1]
+...previous [ITEM id=E1] block from the prior output...
+<<<END>>>
+```
+
+`<<<PREV>>>` contains **only** the `[ITEM id=...]` block for that specific item from the prior output. Do not include the global `[PANEL]`, `[QUEUE]`, or other items' blocks. In multi-item batches, each item that needs ping-pong continuity includes its own `<<<PREV>>>` with its own prior `[ITEM id=...]` block.
+
+When `<<<PREV>>>` is present for an item, the kernel outputs delta-only for that item — only `[DERIVED]`, `[DELTA]`, `[VERDICT_UPDATE]` (if changed), `[STEPS]`, and `[NEXT]`.
+
+<Note>
+  **SNAPSHOT-AS-INPUT shortcut:** instead of manually extracting `<<<PREV>>>` blocks, paste the entire prior PA_PVP output as input without any `<<<I ...>>>` wrappers. The kernel detects the `STATE: DECISION.*` line, `[PANEL]`, `[QUEUE]`, and `[ITEM id=...]` blocks and auto-recovers per-item `PREV` for every detected id. No manual editing required. The human table that follows the code block in the prior output is ignored by the kernel — only the code block is used.
+</Note>
+
+## Evidence and change injection
+
+Revisit a closed item or upgrade evidence quality by appending `<<<NEW_EVIDENCE>>>` or `<<<CHANGE>>>` inside an item wrapper.
+
+```text
+<<<NEW_EVIDENCE evidence_tier=HISTORICAL|REAL|EXPERIMENT>>>
+<evidence payload: logs, measurements, outcomes, citations>
+```
+
+Use `<<<NEW_EVIDENCE>>>` to supply real evidence that upgrades `evidence_tier` or reopens a `CLOSED` item. The `evidence_tier` must be one of `HISTORICAL`, `REAL`, or `EXPERIMENT`.
+
+```text
+<<<CHANGE>>>
+- bullet list of what changed (facts/assumptions/drivers, short and observable)
+```
+
+Use `<<<CHANGE>>>` to declare that assumptions or drivers have changed since the item was closed. This is an allowed trigger to revisit items that closed with `ct=SIM`.
+
+<Warning>
+  **Duplicate ids:** if the same `id` appears more than once in the same batch, the second occurrence is immediately `DISCARDED` with `trigger=DUPLICATE_ID_REJECTED`. No auto-merge or questions are asked. The first occurrence is processed normally.
+</Warning>

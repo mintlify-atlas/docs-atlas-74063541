@@ -1,0 +1,71 @@
+---
+title: "PA_PVP: AI-Native Adversarial Decision Protocol"
+sidebarTitle: "Introduction"
+description: "PA_PVP is a prompt-engineering protocol that forces a verdict, an executable next step, and a stateful snapshot from any LLM on every decision run."
+---
+
+PA_PVP is a behavioral contract — a plain-text kernel file you load into any LLM — that transforms uncertain situations into operational decisions. Instead of generating discussion, the model is bound to produce a forced verdict (`DO NOW`, `DO LATER`, or `DISCARD`), a single executable `[NEXT]` action, and a machine-readable state snapshot you can paste back into the next run. It is designed for anyone who needs an LLM to behave like a decision engine rather than a conversation partner: engineers evaluating architecture trade-offs, teams pressure-testing plans, or AI agents running adversarial peer-validation loops.
+
+## The problem PA_PVP solves
+
+Left to their defaults, language models explain, elaborate, and hedge. Ask an LLM to decide between two viable options and it will typically present both sides, note the trade-offs, and defer the verdict back to you. That behavior is useful for exploration but actively harmful when you need a concrete next step.
+
+PA_PVP fixes this by loading a contract — not a suggestion — into the model's context. The contract specifies output format, routing rules, verdict semantics, and closure policy with enough determinism that the model cannot satisfy the contract by producing prose. Every output must start with `STATE: DECISION.TEST.FINAL`, contain exactly one machine code block, and name one executable `[NEXT]` step. Outputs that lack the state header are non-operational by definition and must not be used as machine state.
+
+The result is a decision loop you can re-enter: paste the previous output back, and the model resumes from where it left off rather than restarting from zero.
+
+## What you get on every run
+
+<CardGroup cols={2}>
+  <Card title="Forced Verdict" icon="scale-balanced">
+    Every item receives exactly one of three verdicts: **DO NOW**, **DO LATER**, or **DISCARD**. Vague answers like "it depends" are not valid outputs under the contract.
+  </Card>
+  <Card title="Executable [NEXT]" icon="arrow-right">
+    A single, bounded next action in the form `S{n}: VERB OBJECT -> OUTPUT | timebox<=Nm | fail_if=CONDITION`. It must match an emitted step — the kernel cannot invent a new action for `[NEXT]`.
+  </Card>
+  <Card title="Machine Snapshot" icon="floppy-disk">
+    The entire output lives in one copy-paste code block starting with `STATE: DECISION.TEST.FINAL`. Paste it back on the next run and PA_PVP resumes in delta-only mode — no manual editing required.
+  </Card>
+  <Card title="Scalable Surface" icon="sliders">
+    Low-impact or simple decisions stay short. Contested, high-risk, or probing items expand to full structure automatically. The workflow does not change regardless of decision complexity.
+  </Card>
+</CardGroup>
+
+## When to use PA_PVP
+
+- **Reversible choices that still need a clean next step.** Even low-stakes decisions benefit from a forced verdict and a timebox. PA_PVP stays light for these and does not over-engineer the output.
+- **Decisions that will not close.** If a decision keeps staying vague through normal discussion, PA_PVP treats doubt as a state transition rather than a blocker and forces a move.
+- **Plan pressure-testing.** Submit a bullet-list plan in `<<<PLAN>>>` mode. PA_PVP applies a fail-fast signal-to-noise gate, scores the plan, and identifies the dominant risk gate.
+- **Artifact validation.** Paste a prompt, document, protocol, or code file in `<<<ARTIFACT>>>` mode. PA_PVP runs a structural audit and surfaces the highest-priority finding.
+- **AI-to-AI peer review.** The delta-only ping-pong model is designed for adversarial peer validation between two model instances. Each run advances the item by one break-and-patch cycle.
+- **Previous run continuation.** Paste an entire prior PA_PVP snapshot as input. The kernel auto-recovers per-item state and continues from the last `[NEXT]` step.
+
+## Core properties
+
+| Property | Value |
+|---|---|
+| Protocol version | PA_PVP v9.9.0 |
+| Kernel file | `PA_PVP_full_v9.9.0_canonical.txt` |
+| Default `ExecCapability` | `NO_RUNTIME` — no external execution; the LLM simulates |
+| Default `ClosePolicy` | `SIM_OK` — simulated closure is allowed but must be labeled |
+| Default `AskUser` | `OFF` — the kernel does not ask the operator for missing evidence |
+| License | Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0) |
+
+## Practical limits
+
+PA_PVP is not a free-form brainstorming prompt. It is a decision contract, and it works best when there is something concrete to push through a decision loop — a plan, artifact, trade-off, blocker, or previous state.
+
+A few important boundaries to keep in mind:
+
+- **Simulated closure is labeled, not hidden.** When `ExecCapability=NO_RUNTIME`, the kernel may close an item via simulation. The closure tier is explicitly marked `ct:SIM`. Irreversible decisions or items marked `REAL_ONLY` cannot close as simulated; they park in `STANDBY` with `trigger=CLOSE_BLOCKED_REAL_ONLY`.
+- **Weak evidence does not become false certainty.** If evidence is weak, PA_PVP simulates the best available outcome, parks the item, or discards it — it does not invent certainty. Critical driver confidence is capped when evidence is poor.
+- **Invalid outputs must not be reused as state.** If `[PANEL]` contains `OutputValidity: INVALID`, the output is diagnostic only. Do not paste it back as machine state and do not use it as `<<<PREV>>>`.
+- **Scale is earned, not assumed.** Small, low-impact decisions stay at `MIN_SURFACE`. Output only expands to full debug structure when an item is contested, has an active gate, or enters `PROBING` state.
+
+<Note>
+  This project was developed with AI assistance. The kernel, documentation, and repository materials were shaped through human-directed work supported by AI tools during drafting, structuring, review, and refinement. AI assistance does not make the protocol automatically correct, complete, or suitable for every use case. Read it, test it, and adapt it to your own context.
+</Note>
+
+<Tip>
+  Ready to run your first decision loop? The [Quickstart](/quickstart) walks you through loading the kernel, submitting a plain-language input, and reading the output in under five minutes.
+</Tip>

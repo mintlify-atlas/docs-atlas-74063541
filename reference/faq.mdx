@@ -1,0 +1,179 @@
+---
+title: "PA_PVP Frequently Asked Questions"
+sidebarTitle: "FAQ"
+description: "Answers to common questions about using PA_PVP, including how to handle invalid outputs, what to do when verdicts seem wrong, and how to extend the protocol."
+---
+
+This page answers the most common questions about using and extending PA_PVP. Whether you are running your first decision loop or debugging an unexpected PROBING state, the answers here reflect the actual kernel rules in `PA_PVP_full_v9.9.0_canonical.txt` — the authority surface for all execution semantics.
+
+---
+
+<Accordion title="What LLMs work with PA_PVP?">
+  Any LLM that can follow a structured behavioral contract can run PA_PVP. The kernel is a `.txt` file — it sets rules for verdict routing, output format, and decision-kernel semantics that the model is expected to apply deterministically.
+
+  In practice, output quality depends heavily on the model's ability to follow multi-rule, branching contracts consistently across a long context. Larger and more capable models tend to produce more consistent outputs — correct `[QUEUE]` coverage, reliable gate derivation, and well-formed step grammar. Smaller models may produce structurally valid outputs but miss edge cases in gate precedence or probe governance.
+
+  You can test compliance by checking for `STATE: DECISION.TEST.FINAL` at the start of the code block, correct `[QUEUE]` coverage of all input ids, and a `[NEXT]` that matches an emitted step.
+</Accordion>
+
+<Accordion title="Do I need to use the formal wrapper syntax?">
+  No. Plain-language input works fine for getting started. When you give the kernel a question or situation without any `<<<I ...>>>` wrappers, it applies PLAN mode automatically, runs the SNR gate, and produces a valid output with a verdict, `[NEXT]`, and machine state block.
+
+  Formal wrappers give you more control:
+
+  - `<<<B ...>>>` sets batch-level expiry, resource limits, and close policy.
+  - `<<<I id=... expire_days=... depends_on=... uses=...>>>` gives you stable ids for multi-run continuity, dependency declarations, and resource concurrency enforcement.
+  - `reversibility=IRREVERSIBLE` forces real-evidence-only closure.
+
+  Start with plain language. Add wrappers when you need to track state across runs, manage dependencies, or control expiry and close policy explicitly.
+</Accordion>
+
+<Accordion title="What does it mean when I get OutputValidity: INVALID?">
+  The output is **diagnostic only**. It cannot be used as machine state. There are four possible `InvalidReason` values:
+
+  - **`BATCH_COVERAGE`**: At least one input item id was missing from `[QUEUE]` or from the emitted `[ITEM id=...]` blocks, or an extra id appeared that was not in the input. The `CoverageDiff` field shows `missing={...}; extra={...}`. This is the most common invalidity reason.
+  - **`CODE_BLOCK_PURITY`**: Narrative content, explanations, or prose appeared inside the machine code block. The code block must contain only PA_PVP blocks and their allowed fields.
+  - **`PREV_SURFACE`**: A `<<<PREV>>>` item emitted blocks beyond the allowed delta surface (`[DERIVED]`, `[DELTA]`, `[VERDICT_UPDATE]`, `[STEPS]`, `[NEXT]`).
+  - **`OTHER`**: Uncategorized invalidity.
+
+  When you see `OutputValidity: INVALID`:
+  1. Do not use the output as `<<<PREV>>>` or SNAPSHOT-AS-INPUT.
+  2. Check `InvalidReason` and, if `BATCH_COVERAGE`, check `CoverageDiff` to identify the missing or extra ids.
+  3. Reload the kernel and retry. If the model is consistently dropping items, reduce batch size or check that all `<<<I id=...>>>` wrappers are correctly formed.
+</Accordion>
+
+<Accordion title="My output is missing STATE: DECISION.TEST.FINAL. What do I do?">
+  The output is **non-operational**. Do not execute any steps from it.
+
+  `STATE: DECISION.TEST.FINAL` must be the first line of the machine code block. If it is missing, the kernel was not applied — the system prompt was not loaded correctly, the model did not follow the contract, or the kernel text was truncated.
+
+  Steps to recover:
+  1. Verify the kernel file (`PA_PVP_full_v9.9.0_canonical.txt`) is loaded as the system prompt or pasted at the start of the conversation.
+  2. Reload the kernel and resubmit your input.
+  3. Do not paste the invalid output back as SNAPSHOT-AS-INPUT — it will not be recognized as a valid PREV_SNAPSHOT.
+
+  The kernel states explicitly: "If STATE is missing, the output is NON-OPERATIONAL (must not be used to execute)."
+</Accordion>
+
+<Accordion title="How do I continue from a previous run?">
+  Paste the entire prior machine code block output as input. No editing required.
+
+  The kernel detects this as a PREV_SNAPSHOT: a block containing `STATE: DECISION.*`, `[PANEL]`, `[QUEUE]`, and one or more `[ITEM id=...]` blocks. It auto-recovers per-item `<<<PREV>>>` state for each id and resumes delta-only output — `[DERIVED]`, `[DELTA]`, `[VERDICT_UPDATE]` (if changed), `[STEPS]`, and `[NEXT]`.
+
+  You do not need to manually cut the previous output, extract individual `[ITEM id=...]` blocks, or add any wrappers for normal continuation. This is the `CopyPasteMode=NO_LOOK` design: paste the whole thing and let the kernel handle recovery.
+
+  The only text the kernel ignores from a pasted snapshot is content after the code block (e.g., `[HUMAN_TABLE]` — that is rendering-only and not machine state).
+</Accordion>
+
+<Accordion title="Can I add more items to an existing batch?">
+  Yes. Include `<<<I ...>>>` wrappers for your new items and paste the prior snapshot in the same input. The kernel handles both:
+
+  - **Matching ids** (present in both the new wrappers and the prior snapshot): the kernel auto-recovers `<<<PREV>>>` from the snapshot and applies delta-only output. It marks these with `prev_source=SNAPSHOT_RECOVERED` in `[ITEM_PANEL]`.
+  - **New ids** (in wrappers but not in the prior snapshot): the kernel gives them full treatment as fresh items.
+
+  No manual extraction of prior `[ITEM id=...]` blocks is required. The kernel resolves the merge by matching ids between the new wrappers and the snapshot.
+</Accordion>
+
+<Accordion title="When should I set AskUser = ON?">
+  Set `AskUser = ON` (by changing the contract switch in the kernel or by convention with the model) when you are running interactively and want the kernel to ask you for one specific piece of missing external evidence before proceeding.
+
+  The kernel imposes strict eligibility requirements before it emits an `AskUser` question:
+  - `AskUserMode = ALLOW`
+  - The item is non-terminal (`term = N`)
+  - The item's trigger is in `EXTERNAL_BLOCK_LOCK_TRIGGERS`: `BLOCKED_EXTERNAL`, `EXTERNAL_DATA_REQUIRED`, or `CLOSE_BLOCKED_REAL_ONLY`
+  - At least one of: `ClosePolicy = REAL_ONLY`, `reversibility = IRREVERSIBLE`, or `spent_internal = YES` (at least one prior internal cycle was spent)
+
+  When multiple items are eligible, the kernel selects exactly one question (highest impact, then urgency, then id lexical order) and emits it in `[PANEL].AskUser`.
+
+  Keep `AskUser = OFF` (the default) for AI-to-AI loops, automated batch runs, or any workflow where interactive human input is not expected — the kernel will simulate, park STANDBY, or probe instead of asking.
+</Accordion>
+
+<Accordion title="What is Falsification Debt and how do I clear it?">
+  Falsification Debt is opened when an item's critical driver has low confidence and no adequate probe is protecting it. It appears in `[ITEM_PANEL]` as `falsification_debt: OPEN(<driver>)`.
+
+  Debt signals that the kernel cannot close the item without additional evidence protection. It also affects `ds = SLOW`, prevents CLOSED transition (except in LOW-impact cases), and counts toward the batch debt ceiling of 2 active drivers.
+
+  **To clear debt:**
+
+  1. **Provide a validated probe.** A `[PROBE_LOG]` entry with `status = VALIDATED`, `context_match = YES`, and `representativeness = HIGH` protects the critical driver from debt. This requires a well-formed probe with a canonical `constraint_signature`, matching `target_driver`, and an observable `kill_switch`.
+
+  2. **Provide real evidence.** Supply `<<<NEW_EVIDENCE evidence_tier=REAL|EXPERIMENT|HISTORICAL>>>` with an evidence payload. This upgrades `best_evidence_tier` and allows confidence to rise above the tier/domain cap.
+
+  Debt is not cleared by:
+  - Narrative reassurance or prose argument.
+  - A probe with `representativeness = MED` (MED probes do not protect from debt).
+  - A probe with `context_match = NO` or `UNKNOWN`.
+  - Ignoring the debt field and proceeding.
+
+  The kernel tracks debt through `[DERIVED].reopen_total` and `[PANEL].Governance` and will re-evaluate debt on every ping-pong run.
+</Accordion>
+
+<Accordion title="My item keeps getting PROBING and never closes. What's wrong?">
+  Check the `[PROBE_LOG]` for `trigger = REDESIGN_TRIGGER` and inspect the `counters` line in `[DERIVED]`.
+
+  The most common cause of a stalled PROBING loop is that the probe is not progressing — the kernel detects this through several conditions:
+
+  - `probe_cycle_total (pc) >= 2` with critical driver confidence still LOW/MED and `best_evidence_tier` still SIMULATED/DERIVED.
+  - `near_miss_total (nm) >= 2` with `best_evidence_tier` still weak.
+  - INCONCLUSIVE status repeating 2 times in a row for the same `target_driver`.
+
+  When any of these conditions fire, `dominant_gate = REDESIGN_TRIGGER` and the kernel requires a probe redesign.
+
+  **A valid redesign must change at least one of these vs the prior PREV output** (exact string compare):
+  - `decision_context_metric`
+  - `constraint_signature`
+  - `kill_switch.condition`
+
+  If none of those change, the redesign is treated as cosmetic (no progress), REDESIGN_TRIGGER remains, and Step 1 will be another redesign step or a STANDBY park.
+
+  To break the loop: redesign the probe with a genuinely different metric, constraint signature, or kill-switch condition. If no bounded redesign path exists, the kernel will park the item in STANDBY or (if a higher-priority terminal rule applies) DISCARD it.
+</Accordion>
+
+<Accordion title="Can I reopen a CLOSED item?">
+  Yes, under strict conditions. The rules differ by closure tier:
+
+  **If `ct = REAL` (closed with real evidence):**
+  - You must provide `<<<NEW_EVIDENCE evidence_tier=HISTORICAL|REAL|EXPERIMENT>>>` with an evidence payload.
+  - A `<<<CHANGE>>>` declaration alone is not sufficient for REAL-closed items.
+
+  **If `ct = SIM` (simulated closure):**
+  - You may provide either `<<<NEW_EVIDENCE>>>` (same tiers) OR `<<<CHANGE>>>` with a bullet list of what changed.
+
+  **Reopen budget cap:** The reopen budget is 1 per item id. If `reopen_total >= 1` in the prior PREV output, reopening is blocked with `trigger = REOPEN_BLOCKED_BUDGET`, even if you provide valid evidence. The item remains CLOSED. After the budget cap is reached, you can still set `contested = YES` or open falsification debt, but you cannot force a state transition.
+
+  If the required evidence or change declaration is missing entirely, the item remains CLOSED with `trigger = REOPEN_BLOCKED_NO_DELTA`. The kernel does not ask for input in this case — it fails closed.
+</Accordion>
+
+<Accordion title="How is PA_PVP licensed?">
+  PA_PVP is licensed under **Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)**.
+
+  You can use, modify, and redistribute PA_PVP under the same license with attribution. The attribution recipe from the repository is:
+
+  - **Project:** PA_PVP - a PLUTONIUM-like Adversarial Peer Validation Protocol
+  - **Source:** Link to the repository or the specific canonical kernel file
+  - **License:** CC BY-SA 4.0
+  - **Changes:** State what you changed, if anything
+
+  ShareAlike means any derivative work or adaptation must be distributed under the same CC BY-SA 4.0 license.
+</Accordion>
+
+<Accordion title="Where is the authority surface?">
+  The canonical kernel file `PA_PVP_full_v9.9.0_canonical.txt` is the source of truth for all execution semantics — verdict routing, gate derivation, probe governance, lifecycle rules, and output format.
+
+  The README and this documentation are human-readable explanations and entry points. They describe what the kernel does in plain language. If there is ever a conflict between the documentation and the kernel text, **the kernel governs**.
+
+  When editing the kernel, the repository guidelines are:
+  - Keep execution rules inside the kernel.
+  - Keep human explanation inside the README and docs.
+  - Avoid version metadata and packaging text inside the kernel.
+  - Prefer deterministic branches over vague guidance.
+  - Preserve snapshot-as-input and delta-only ping-pong behavior.
+
+  If you are debugging unexpected behavior, always go back to the kernel text first.
+</Accordion>
+
+---
+
+<Note>
+  PA_PVP was developed with AI assistance. The project, documentation, and repository materials were shaped through human-directed work supported by AI tools during drafting, structuring, review, and refinement. AI assistance does not make the project automatically correct, complete, or suitable for every use case. Read it, test it, and adapt it to your own context before relying on verdicts in high-stakes situations.
+</Note>

@@ -1,0 +1,141 @@
+---
+title: "Reality Probes and Falsification Debt in PA_PVP"
+sidebarTitle: "Probes & Debt"
+description: "PA_PVP uses reality probes to test critical drivers under uncertainty and tracks falsification debt when evidence is insufficient to close a decision cleanly."
+---
+
+When a decision's critical driver has low confidence, PA_PVP does not force a verdict through on blind assumptions. Instead it pushes the item into a `PROBING` sub-state and launches a reality probe — an adversarially designed test specifically intended to falsify the critical driver, not confirm it. If the driver survives the probe, confidence rises. If the probe falsifies it, the Falsification Principle fires and the item is discarded. When no adequate probe is in place and confidence remains low, the kernel opens explicit falsification debt against the driver so that the risk is visible and tracked, not hidden.
+
+## What is a reality probe
+
+A reality probe is a structured object that targets the critical driver of a decision. It is adversarial by construction — its kill-switch is designed to trigger if the driver is wrong, not merely to validate existing assumptions.
+
+<ResponseField name="probe_id" type="string" required>
+  A stable unique identifier for this probe instance. Used to track the probe across runs and to prevent silent extension of expired probes.
+</ResponseField>
+
+<ResponseField name="target_driver" type="string" required>
+  Must exactly match the item's `critical_driver`. A probe that targets a different driver does not protect the item from falsification debt.
+</ResponseField>
+
+<ResponseField name="decision_context" type="object" required>
+  The real operational decision this probe informs. Must include `decision_context_id` (stable label), `decision_context_driver` (the critical driver the context is about), `decision_context_metric` (the success metric used), and `constraint_signature` (canonical environment/scale/data/time/constraints string).
+</ResponseField>
+
+<ResponseField name="status" type="enum" required>
+  Current probe status. One of: `ACTIVE` (probe is running), `INCONCLUSIVE` (probe ran but could not establish a clear result), `VALIDATED` (probe ran and did not falsify the driver), `FALSIFIED` (probe contradicted the critical driver — Falsification Principle applies), `EXPIRED` (probe exceeded its TTL).
+</ResponseField>
+
+<ResponseField name="context_match" type="enum" required>
+  Whether the probe's context matches the real use case. `YES` / `NO` / `UNKNOWN`. If `NO`, representativeness is forced to `LOW` and the probe is `INCONCLUSIVE`. If `UNKNOWN`, representativeness is capped at `MED`.
+</ResponseField>
+
+<ResponseField name="representativeness" type="enum" required>
+  `HIGH` / `MED` / `LOW`. Derived from three representativeness questions (see below). A `LOW` probe is automatically `INCONCLUSIVE` and does not protect from falsification debt.
+</ResponseField>
+
+<ResponseField name="contested" type="boolean">
+  If `YES`, probe status is `INCONCLUSIVE` until contestation is resolved, and representativeness is capped at `MED`.
+</ResponseField>
+
+<ResponseField name="kill_switch" type="object" required>
+  A binary or numeric observable condition. Must be explicit and measurable — not abstract. If the kill-switch triggers, `probe.status=FALSIFIED`.
+</ResponseField>
+
+<ResponseField name="expires_at" type="date">
+  Default: `created_at + 90 days`. After expiry, the probe does not protect from falsification debt. Adopters may reference it only as `HISTORICAL` evidence with reduced confidence.
+</ResponseField>
+
+## Representativeness
+
+Representativeness determines how much weight a probe result carries. It is evaluated strictly against the declared `decision_context` using three yes/no questions:
+
+1. Does the probe target the **same critical driver** as the decision?
+2. Does the probe **environment match real use** — in terms of scale, constraints, and data?
+3. Is the **success metric identical** to the real decision's metric?
+
+| Answers | Representativeness |
+|---------|--------------------|
+| 3 YES | `HIGH` |
+| 2 YES | `MED` |
+| ≤ 1 YES | `LOW` |
+
+**Operational consequences:**
+
+- `LOW` → probe is automatically `INCONCLUSIVE`; does not protect from falsification debt
+- `MED` → probe is adoptable but does **not** protect from falsification debt
+- `HIGH` + `context_match=YES` + `contested=NO` → probe provides full debt protection
+
+## Probe lifecycle
+
+<Steps>
+  <Step title="Probe created">
+    When an item enters `PROBING`, a `[PROBE]` object is created for that run. The probe targets the item's `critical_driver`, declares a `kill_switch`, sets `context_match`, and records `representativeness`. The item's `expires_at` defaults to 90 days from `created_at`.
+  </Step>
+  <Step title="Probe is ACTIVE">
+    While `status=ACTIVE`, the item stays in `PROBING`. Its verdict is provisional. The `exp` field in `[QUEUE]` shows `PAUSED` — expiry of the `STANDBY` inactivity clock is suspended while the probe runs.
+  </Step>
+  <Step title="Probe resolves">
+    The probe resolves when its `kill_switch` condition is evaluated. If the kill-switch triggers, `status=FALSIFIED`. Otherwise, if outcome is clear and positive, `status=VALIDATED`. If the environment or metric doesn't match or evidence is still synthetic, `status=INCONCLUSIVE`.
+  </Step>
+  <Step title="FALSIFIED — Falsification Principle fires">
+    If `probe.status=FALSIFIED` with `context_match=YES` and `representativeness=HIGH`, the Falsification Principle applies: verdict becomes `DISCARD` unconditionally and `trigger=FALSIFICATION` is set. This is the highest-priority verdict rule in PA_PVP.
+  </Step>
+  <Step title="EXPIRED after 90 days">
+    If `now > expires_at`, the probe transitions to `EXPIRED`. It no longer protects from falsification debt. Adopters may retain it only as `HISTORICAL` evidence with reduced confidence. To renew, create a new `probe_id` — do not silently extend the old probe.
+  </Step>
+</Steps>
+
+## Fast-close and fast-discard rules
+
+PA_PVP defines shortcut rules for decisive probe outcomes:
+
+**Fast-discard:**
+If any probe satisfies all three conditions — `probe.status=FALSIFIED`, `context_match=YES`, `representativeness=HIGH` — the item transitions immediately to `DISCARDED` with `trigger=FALSIFICATION`. No further review is needed.
+
+**Fast-close:**
+If there exist at least **two independent** probes for the critical driver that each satisfy `probe.status=VALIDATED`, `context_match=YES`, `representativeness=HIGH`, and neither probe is expired, the item may transition to `CLOSED` unless another governance rule prevents it.
+
+For `Complex` or `Chaotic` domains, at least one of the two validating probes must have `evidence_tier=REAL` or `EXPERIMENT` — two simulated validations are not sufficient to fast-close in high-uncertainty domains.
+
+## Falsification debt
+
+Falsification debt tracks the risk accumulated when a decision proceeds without adequate probe protection on its critical driver.
+
+**Debt opens when:** A decision is `ACTIVE`, `STANDBY`, or `PROBING` with `critical_driver_confidence` in `{LOW, VERY LOW}` and no `ACTIVE` (non-expired) adopted probe covers that driver with adequate representativeness.
+
+**Debt ceiling:** At most **two** critical drivers may carry active debt at any time. This is the `DEBT_CEILING` gate. If a new decision would open debt on a third driver, it cannot receive `DO NOW` — it is forced into `PROBING` or `STANDBY` with `trigger=DEBT_CEILING` until one of the existing two debt drivers clears.
+
+**Debt clears when:**
+- Critical driver confidence reaches `MED` or above
+- The decision closes (`CLOSED`) or expires (`EXPIRED`)
+- The driver is no longer critical in any active decision
+- A conclusive probe result (VALIDATED) resolves the uncertainty
+
+**Debt is tracked per critical driver, not per item.** One probe that targets a driver can protect multiple items that share the same `critical_driver` if they adopt it.
+
+<Note>
+**Dependency waiver debt:** If a `depends_on` dependency is explicitly waived while it is not yet `CLOSED` or `DISCARDED`, the kernel treats this as blind-risk acceptance. It immediately opens `falsification_debt=OPEN(critical_driver)` for the waiving item and caps `critical_driver_confidence` to `LOW` for that run. A probe or acquisition step targeting the uncertainty created by the waiver is required (unless `impact=LOW`).
+</Note>
+
+## [PROBE_LOG]
+
+The `[PROBE_LOG]` block appears in an item's output when:
+- The item is in `PROBING` state, **or**
+- The item carries falsification debt (`falsification_debt != NONE`) and is not in `DIY` profile, **and** current or previous probe entries exist for that item
+
+The kernel must **not fabricate probe entries** to explain debt. If no probe has been run but debt exists, the debt is surfaced through `[ITEM_PANEL].falsification_debt` only — no `[PROBE_LOG]` is emitted.
+
+Each entry in `[PROBE_LOG]` records: `probe_id`, `created_at`, `target_driver`, `context_match`, `representativeness`, `evidence_tier`, `status`, `kill_switch_triggered`, `kill_switch_threshold`, `kill_switch_value`, `kill_switch_margin`, `result_summary`, and `decision_changed`.
+
+## Probe TTL
+
+Every probe has a default TTL (time to live) of **90 days** from `created_at`. After this window:
+
+- `probe.status` becomes `EXPIRED`
+- The probe no longer protects any adopter from falsification debt
+- Adopters may reference the expired probe only as `HISTORICAL` evidence with reduced confidence
+
+**Renewal:** To renew a probe, create a new `probe_id`. The new probe must re-declare `decision_context`, `target_driver`, `kill_switch`, and `representativeness_check` from scratch. Silent extension of an old `probe_id` is not allowed.
+
+**Adoption:** Other decisions may adopt an existing probe by adding themselves to the `adopters` list. Adopters inherit the probe's kill-switch and timeline without being able to modify the probe. When a dependency is adopted, falsification debt is recomputed immediately in the same run. Disadoption triggers immediate loss of debt protection and an immediate debt recomputation.

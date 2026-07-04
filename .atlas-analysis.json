@@ -1,0 +1,93 @@
+{
+  "projectType": "general",
+  "projectName": "PA_PVP",
+  "projectDescription": "An AI-native adversarial peer validation protocol that forces structured verdicts, executable steps, and decision state you can paste back into subsequent runs.",
+  "theme": "aspen",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#4C1D95",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/verdicts-and-states",
+              "concepts/queue-and-lifecycle",
+              "concepts/gates-and-triggers",
+              "concepts/evidence-and-closure",
+              "concepts/probes-and-debt"
+            ]
+          },
+          {
+            "group": "Usage Guides",
+            "pages": [
+              "guides/input-format",
+              "guides/output-format",
+              "guides/ping-pong-loop",
+              "guides/ai-to-ai-validation",
+              "guides/reports"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/batch-and-dependencies",
+              "advanced/resource-concurrency",
+              "advanced/hedge-actions",
+              "advanced/editing-the-kernel"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/kernel-fields",
+              "reference/gate-vocabulary",
+              "reference/faq"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Forced verdict output — every run produces DO NOW, DO LATER, or DISCARD with no vague 'it depends' answers",
+    "Stateful ping-pong loop — paste a previous output back to continue delta-only from where you left off",
+    "AI-to-AI adversarial validation — enables peer LLMs to challenge and patch each other's decisions",
+    "Scalable surface — stays minimal for low-impact decisions and expands to full debug structure for contested or high-risk items",
+    "Gates and probes — systematic reality probing, falsification debt tracking, and dominant gate routing",
+    "Executable steps with grammar — steps are observable, timebox-bounded, and have explicit fail conditions",
+    "AskUser contract switch — controls whether the kernel is allowed to request external operator evidence",
+    "SNAPSHOT-AS-INPUT — paste an entire prior output as input for no-look resumption with zero manual editing"
+  ],
+  "publicApiSurface": [
+    "<<<B keep_open=NO expire_days=30 exec_capability=NO_RUNTIME close_policy=SIM_OK ssot_scale=MIN resource_pool=>>> (batch header)",
+    "<<<I id=E1 title=\"...\" keep_open=NO expire_days=30 depends_on= uses= reversibility=>>> (item wrapper)",
+    "<<<PLAN>>> (plan input mode)",
+    "<<<ARTIFACT>>> (artifact audit mode)",
+    "<<<TOOL>>> + <<<TARGET>>> (target analysis mode)",
+    "<<<PREV>>> (per-item previous state for delta-only ping-pong)",
+    "<<<NEW_EVIDENCE evidence_tier=HISTORICAL|REAL|EXPERIMENT>>> (evidence injection)",
+    "<<<CHANGE>>> (change declaration for revisiting simulated-closed items)",
+    "REPORT / REPORT LITE (read-only derived report commands)",
+    "STATE: DECISION.TEST.FINAL (canonical output state header)",
+    "[QUEUE] (machine scan surface with id | verdict | impact | urgency | gate | step1)",
+    "[NEXT] (single executable next action per item)",
+    "[PANEL] (protocol metadata and governance fields)",
+    "[USER_PANEL] (human-readable summary of batch status)",
+    "[HUMAN_TABLE] (derived markdown table — not machine state)",
+    "[PROBE_LOG] (reality probe history for an item)",
+    "[DELTA] / [BREAK] / [PATCH] (adversarial peer delta output)",
+    "AskUser = ON | OFF (contract switch for operator evidence requests)"
+  ]
+}

@@ -1,47 +1,101 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with PA_PVP in Five Minutes"
+sidebarTitle: "Quickstart"
+description: "Load the PA_PVP kernel into an LLM and get your first forced verdict in under five minutes using plain-language input."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This page covers everything you need to get a valid PA_PVP decision run from scratch. By the end you will have loaded the kernel into an LLM, submitted a plain-language input, read the two output surfaces, and understood how to paste the result back to continue the loop.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Get the kernel">
+    The canonical kernel is a single plain-text file:
 
-    ```bash
-    npm install your-package
-    ```
+    [**PA_PVP\_full\_v9.9.0\_canonical.txt**](https://github.com/XxYouDeaDPunKxX/PA_PVP-a-PLUTONIUM-like-Adversarial-Peer-Validation-Protocol/blob/main/PA_PVP_full_v9.9.0_canonical.txt)
+
+    Copy the **full file contents** — every line, from the opening `EXECUTION CONTRACT` header to the final rule — and paste it into the system prompt of your LLM session, or paste it at the very start of the conversation before any other input. The kernel must be present in full for the behavioral contract to take effect. Partial pastes produce unreliable results.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
+  <Step title="Ask in plain language">
+    You do not need to use structured wrappers on the first run. Any of the following plain-language prompts is sufficient to start a decision loop:
+
+    ```text
+    Use PA_PVP on these findings and give me the next action.
+
+    I have two viable options and no clear winner. Use PA_PVP to get a verdict.
+
+    I'm stuck between a safe option and a risky one. Help me decide what moves next.
+
+    This plan feels plausible but fragile. Use PA_PVP to test it.
+
+    Give me PA_PVP output for this.
     ```
+
+    You can start messy. Describe the situation, the options you are weighing, or the plan you want tested. PA_PVP will apply the fail-fast signal-to-noise gate, score the input, and produce a verdict. Ask for "PA_PVP output" explicitly when you want a structured state you can paste back later.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+  <Step title="Read the output">
+    A valid PA_PVP decision run produces exactly two surfaces.
+
+    **Surface 1 — the machine code block.** This is the single source of truth for state. It starts with `STATE: DECISION.TEST.FINAL` and contains everything the kernel needs to resume the loop. The minimal shape looks like this:
+
+    ```text
+    STATE: DECISION.TEST.FINAL
+
+    [QUEUE]
+    E1 | DRAFT->ACTIVE | DO NOW | HIGH | HIGH | ds:OK | term:N | ct:- | pp:OPEN | exp:30 | gate:NONE | S1
+
+    [NEXT]
+    S1: <one executable step> -> <output> | timebox<=30m | fail_if=<condition>
     ```
+
+    The `[QUEUE]` line gives you the item's verdict, impact, urgency, execution mode (`ds`), terminal flag (`term`), closure tier (`ct`), ping-pong status (`pp`), expiry, gate, and the first step token. `[NEXT]` names the single next action to take.
+
+    **Surface 2 — the human table.** After the code block, PA_PVP appends a markdown `[HUMAN_TABLE]` for scanning. It is derived from the `[QUEUE]` and is read-only. Use it for a quick visual overview; it is not machine state and must never be pasted back as input.
+  </Step>
+
+  <Step title="Execute [NEXT]">
+    The `[NEXT]` block names one bounded, executable step. The verdict in `[QUEUE]` tells you what to do with it:
+
+    - **`DO NOW`** — the item is active. Run or simulate the `[NEXT]` step within its declared timebox.
+    - **`DO LATER`** — the item is parked in `STANDBY`. Note the expiry and return when the blocking condition changes.
+    - **`DISCARD`** — the item has been cut. Do not execute its steps.
+
+    If `ExecCapability=NO_RUNTIME` (the default), the LLM simulates the step internally. Simulated closure is labeled `ct:SIM` in the output. If you have real execution results, you can feed them back as `<<<NEW_EVIDENCE evidence_tier=REAL>>>` on the next run to upgrade the closure tier to `ct:REAL`.
+  </Step>
+
+  <Step title="Continue the loop">
+    PA_PVP is designed to be run more than once. To continue from where you left off, paste the **entire previous code block** — everything from `STATE: DECISION.TEST.FINAL` to the last line of the last `[ITEM id=...]` block — as your next input. This is called **SNAPSHOT-AS-INPUT**.
+
+    The kernel detects the snapshot, auto-recovers per-item `PREV` state for every `[ITEM id=...]` it finds, and switches to **delta-only mode**: it advances each item from its current state rather than restarting from zero. You do not need to manually cut or edit the previous output. Paste the whole code block and send.
+
+    Only paste back the **code block**, not the human table that follows it. The table is rendering-only and is ignored by the kernel.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Structured input (optional)
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+For more control over how PA_PVP processes an item, you can wrap your input using the kernel's item syntax. The minimal form is:
+
+```text
+<<<I id=E1 title="my decision" keep_open=NO expire_days=30 depends_on= uses= reversibility=>>>
+<<<PLAN>>>
+- option A: ...
+- option B: ...
+<<<END>>>
+```
+
+The `<<<I ...>>>` wrapper assigns a stable `id` to the item and sets lifecycle fields. The `<<<PLAN>>>` block is a bullet list of options or numbered steps. Structured input is required for multi-item batches, dependency tracking, resource concurrency, and ping-pong continuation with explicit `<<<PREV>>>` blocks. For a single first run with plain language, the wrapper is optional.
+
+## First run checklist
+
+<Note>
+  Before you run, confirm these three things:
+
+  - **Kernel is loaded.** The full contents of `PA_PVP_full_v9.9.0_canonical.txt` are in the system prompt or at the start of the conversation.
+  - **Input has something concrete.** A plan, artifact, trade-off, or blocker — not a purely open-ended topic.
+  - **On the next run, paste the code block.** Copy everything from `STATE: DECISION.TEST.FINAL` down through the last `[ITEM id=...]` line. Do not paste the human table.
+</Note>
+
+<Warning>
+  If the model's response does not contain the line `STATE: DECISION.TEST.FINAL` at the start of a code block, the output is **non-operational**. Do not use it as machine state, do not paste it back as a snapshot, and do not act on its steps as authoritative. Check that the kernel was loaded in full and retry.
+</Warning>

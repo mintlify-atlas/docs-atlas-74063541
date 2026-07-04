@@ -1,0 +1,74 @@
+---
+title: "Verdicts and Lifecycle States in PA_PVP"
+sidebarTitle: "Verdicts & States"
+description: "PA_PVP produces exactly one of three verdicts per item — DO NOW, DO LATER, or DISCARD — and tracks each item through a defined set of lifecycle states."
+---
+
+Every time PA_PVP processes an item it is required to emit exactly one verdict. Vague outputs like "it depends" or "more analysis needed" are not allowed — the kernel is a behavioral contract that forces a decision-shaped output regardless of evidence quality. When evidence is weak, the kernel simulates the best available outcome, labels it explicitly as SIMULATED, and still delivers a verdict with an executable next step and a machine state snapshot you can paste back on the next run.
+
+## The three verdicts
+
+Every item receives one of these three verdicts — no other outcome is permitted.
+
+| Verdict | Meaning | Resulting State |
+|---------|---------|-----------------|
+| `DO NOW` | The item is executable in this run; start at Step 1 | `ACTIVE` |
+| `DO LATER` | Park the item and revisit later; conditions not yet met | `STANDBY` |
+| `DISCARD` | Drop the item; do not execute its steps | `DISCARDED` |
+
+## Why forced verdicts matter
+
+PA_PVP prohibits vague answers. The kernel's execution contract states: "Verdict cannot be 'depends'." This constraint is load-bearing — it ensures every item leaves each run with an unambiguous disposition that a machine or human executor can act on without re-reading prose.
+
+When evidence is unavailable or external reality cannot be reached in the current run, the kernel derives a verdict using internal simulation. Any verdict or closure produced this way is labeled `SIMULATED` so that the operator always knows the confidence level of the output. Simulated closures are allowed under the default `ClosePolicy=SIM_OK` profile but are never silently upgraded to REAL status.
+
+## Lifecycle states
+
+Each item is assigned a state that reflects where it sits in its decision lifecycle. States are not verdicts — they encode the operational condition of an item across multiple runs.
+
+| State | Description | Terminal (Y/N) |
+|-------|-------------|----------------|
+| `DRAFT` | Initial state before a verdict is issued; also the state for items that triggered the PLAN FAIL-FAST SNR gate while `AskUserMode=ALLOW` | N |
+| `ACTIVE` | Item received `DO NOW`; execution should begin at Step 1 | N |
+| `STANDBY` | Item received `DO LATER`; parked and subject to expiry | N |
+| `PROBING` | Sub-state while a reality probe is running; verdict is provisional until the probe resolves | N |
+| `CLOSED` | Decision explicitly finalized for now; can only be reopened under strict rules | Y |
+| `EXPIRED` | A `STANDBY` item exceeded its `expire_days` with no updates | Y |
+| `DISCARDED` | Item was cut; do not execute its steps | Y |
+
+<Note>
+`CLOSED` is used only when the decision is explicitly finalized as done for now — meaning no further ping-pong is required. It is not the same as `ACTIVE`. A decision does not auto-close; it must be explicitly transitioned to `CLOSED` under the closure tier rules.
+</Note>
+
+## State transition rules
+
+Verdicts map deterministically to states:
+
+- `DO NOW` → `ACTIVE`
+- `DO LATER` → `STANDBY`
+- `DISCARD` → `DISCARDED`
+
+`CLOSED` is a separate outcome reserved for items that have been explicitly finalized. It is not a verdict — it is a terminal lifecycle state entered when a decision is done for now and no further execution or ping-pong is expected.
+
+`PROBING` is a sub-state, not a verdict. An item enters `PROBING` when its critical driver confidence is LOW or VERY LOW and a reality probe is launched to test that driver. While in `PROBING`, the item's verdict remains provisional. The item leaves `PROBING` when the probe resolves: it may then close, become `ACTIVE`, move to `STANDBY`, or be `DISCARDED` depending on the probe outcome and the Falsification Principle.
+
+`EXPIRED` is reached automatically when a `STANDBY` item exceeds its effective expiry window without receiving an update. An `EXPIRED` item can be revived — if its id appears in a new batch, it transitions automatically from `EXPIRED` → `DRAFT`.
+
+## Verdict precedence
+
+When multiple governance rules could each independently determine a verdict, PA_PVP resolves them in strict priority order:
+
+<Steps>
+  <Step title="Falsification Principle (highest priority)">
+    If a reality probe contradicts the critical driver — `probe.status=FALSIFIED` with `context_match=YES` and `representativeness=HIGH` — the verdict is `DISCARD` unconditionally. No other rule overrides this.
+  </Step>
+  <Step title="Reality Probe / Hedge / Truth-or-Dare governance">
+    Active probe state, hedge-action constraints, and Truth-or-Dare rules govern whether an item can proceed to `DO NOW` or must park or discard.
+  </Step>
+  <Step title="Expected net benefit under uncertainty">
+    Driver-based expected net benefit, supported by Evidence Binding, determines the verdict when no higher-priority governance rule has fired.
+  </Step>
+  <Step title="Score / Impact (lowest priority)">
+    The numeric Decision Score and Impact bucket (`LOW` / `MED` / `HIGH`) serve as a consistency check and scaling signal only. Score alone is not the sole reason for a verdict.
+  </Step>
+</Steps>

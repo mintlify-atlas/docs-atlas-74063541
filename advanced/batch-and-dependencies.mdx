@@ -1,0 +1,113 @@
+---
+title: "Batch Processing and Item Dependencies in PA_PVP"
+sidebarTitle: "Batch & Dependencies"
+description: "Submit multiple items in one PA_PVP run with a batch header, and declare execution-order dependencies between items using the depends_on field."
+---
+
+PA_PVP handles multiple items in a single run. You open the run with a batch header (`<<<B>>>`), then wrap each item with an `<<<I>>>` block. Dependencies declared via `depends_on` enforce execution order — an item that depends on an unresolved predecessor stays ping-pong OPEN until the blocker closes or is explicitly waived.
+
+## Submitting a batch
+
+A batch consists of one `<<<B>>>` header followed by one or more `<<<I>>>` item blocks. Every item must carry a unique `id`. The header sets run-wide defaults; per-item fields override them.
+
+```text
+<<<B keep_open=NO expire_days=30 exec_capability=NO_RUNTIME close_policy=SIM_OK ssot_scale=MIN resource_pool=>>>
+
+<<<I id=E1 title="design decision" keep_open=NO expire_days=30 depends_on= uses= reversibility=>>>
+<<<PLAN>>>
+- option A: adopt new architecture
+- option B: extend current system
+<<<END>>>
+
+<<<I id=E2 title="implementation plan" keep_open=NO expire_days=30 depends_on=E1 uses= reversibility=>>>
+<<<PLAN>>>
+- step 1: scaffold new module
+- step 2: migrate existing logic
+<<<END>>>
+```
+
+In this example, E2 declares `depends_on=E1`. The kernel will not advance E2 until E1 reaches a terminal state (`CLOSED` or `DISCARDED`).
+
+## BATCH_COVERAGE rule
+
+The kernel enforces a strict coverage contract over every run.
+
+<Steps>
+  <Step title="Collect expected IDs">
+    `expected_ids` = all item ids declared in input wrappers (`input_ids`) **plus** any ids introduced by an explicit split in this run (`split_ids`).
+  </Step>
+  <Step title="Verify [QUEUE] coverage">
+    Every id in `expected_ids` must appear in `[QUEUE]`. No id may be omitted. No extra id may appear unless it was introduced by a split.
+  </Step>
+  <Step title="Verify [ITEM] coverage">
+    Every id in `expected_ids` must have a corresponding `[ITEM id=...]` block emitted in the output.
+  </Step>
+  <Step title="Fail-closed on violation">
+    If any coverage violation is detected, the entire output is marked **INVALID**. `[PANEL]` will contain:
+    - `OutputValidity: INVALID`
+    - `InvalidReason: BATCH_COVERAGE`
+    - `CoverageDiff: missing={...}; extra={...}`
+
+    Do not use an INVALID output as `<<<PREV>>>` or as `SNAPSHOT_AS_INPUT`.
+  </Step>
+</Steps>
+
+<Note>
+The `PP_CLOSED_THIS_RUN` counter in `[PANEL]` tracks how many items transitioned to a terminal state (`CLOSED` or `DISCARDED`) during the current run. Use it to quickly scan how much forward progress was made in a single pass.
+</Note>
+
+## The depends_on field
+
+`depends_on` declares execution-order constraints. It does **not** automatically block a verdict — the kernel still evaluates impact, urgency, and scoring — but it does keep the item ping-pong OPEN until the blocker resolves.
+
+<Tabs>
+  <Tab title="Behavior when blocked">
+    - If `depends_on` is non-empty and any listed dependency is not `CLOSED` or `DISCARDED`, the item remains ping-pong OPEN.
+    - **Step 1 priority applies**: the kernel's first step for that item must either resolve the blocking dependency or explicitly waive it.
+    - Non-waived dependent steps are not executed before the dependency is resolved.
+  </Tab>
+  <Tab title="Behavior when clear">
+    - Once all dependencies are `CLOSED` or `DISCARDED`, the item proceeds normally through verdict and scoring.
+    - Step 1 priority no longer needs to address the dependency — execution can advance to the item's own plan steps.
+  </Tab>
+</Tabs>
+
+## Circular dependency handling
+
+The `depends_on` graph among items in the same batch must be acyclic. A self-dependency (an item listing its own id) also counts as a cycle.
+
+When the kernel detects a cycle among batch items:
+
+- **Every item in the cycle** receives `verdict=DO LATER`, `new_state=STANDBY`, and `trigger=CIRCULAR_DEPENDENCY`.
+- The cycle is treated as a structural modeling error — it does not resolve by waiting.
+- Step 1 priority applies. The kernel's first step must break the cycle by doing at least one of:
+  - Split the involved item(s) into a decision item and an execution item (or otherwise refactor the ids).
+  - Remove or replace at least one `depends_on` edge.
+  - Explicitly waive at least one dependency (debt rules then apply — see below).
+  - Discard one item in the cycle if it is dominated or invalidated.
+
+<Note>
+Dependencies that point to ids **not present in the current batch** are not part of the cycle check. Only intra-batch edges are evaluated.
+</Note>
+
+## Dependency waiver and debt
+
+You can instruct the kernel to proceed despite an unresolved dependency by explicitly waiving it. Waiving is treated as blind-risk acceptance and incurs governance overhead.
+
+When a dependency is waived while it is not `CLOSED` or `DISCARDED`:
+
+- `critical_driver_confidence` is **capped to LOW** for this run.
+- `falsification_debt` is opened: `OPEN(critical_driver)`.
+- A probe or acquisition step is required at the earliest non-conflicting position to reduce the uncertainty caused by the waiver — **unless** `impact=LOW`.
+- Step 1 priority applies. If no higher-priority condition is active, the waiver action itself is Step 1.
+
+## Item splits
+
+An item may be split into sub-items during a run (for example, E1 → E1a and E1b). The split produces new ids that are added to `split_ids`.
+
+The **original id still appears** in both `[QUEUE]` and as an emitted `[ITEM id=...]` block. The split sub-ids are tracked alongside the original. This preserves BATCH_COVERAGE: the original id is never silently dropped.
+
+## Batch enforcement rules
+
+- **Missing id**: if an item wrapper is missing its `id` field entirely, the kernel marks it `INVALID_ITEM` — it is skipped, but the rest of the batch continues processing.
+- **Duplicate id**: if the same `id` appears more than once in the same batch, the kernel applies `REJECT_SECOND` — the second occurrence is immediately marked `DISCARDED` with `trigger=DUPLICATE_ID_REJECTED`. No auto-merge or questions are issued.

@@ -1,0 +1,121 @@
+---
+title: "AI-to-AI Adversarial Peer Validation with PA_PVP"
+sidebarTitle: "AI-to-AI Validation"
+description: "Use two LLMs running PA_PVP to challenge and refine each other's decisions through a structured adversarial delta-only ping-pong loop."
+---
+
+PA_PVP is designed for AI-to-AI peer validation where one LLM proposes a decision and a second challenges it. Each challenge is bounded: one broken assumption and one minimal patch per iteration. The loop runs until the verdict stabilizes, the item is discarded, or a human checkpoint intervenes. Because every exchange is machine state, the entire adversarial history is reproducible and auditable.
+
+## How it works
+
+<Steps>
+  <Step title="LLM-A runs PA_PVP and produces a snapshot">
+    LLM-A loads the PA_PVP kernel and processes an item — a plan, artifact, or decision. It produces a full machine snapshot with a verdict, `[NEXT]`, and driver analysis.
+
+    ```text
+    Give me PA_PVP output for this.
+    ```
+  </Step>
+  <Step title="LLM-B receives the snapshot and may set contested=YES">
+    LLM-B receives LLM-A's snapshot as input. If LLM-B disagrees with a driver, driver relationship, evidence binding, probe design, representativeness, or the verdict itself, it sets `contested=YES` on the item and produces a `[DELTA]` addressing the contested point.
+  </Step>
+  <Step title="LLM-B produces a [DELTA] with one [BREAK] and one [PATCH]">
+    LLM-B's output includes exactly one `[BREAK]` (what is wrong and why it breaks net benefit) and one `[PATCH]` (the minimal fix that increases expected net benefit or confidence). The delta must include a causal reference to a named driver, changed relationship, probe id, or evidence item.
+  </Step>
+  <Step title="LLM-A receives the delta and produces the next state">
+    LLM-A pastes LLM-B's output as SNAPSHOT-AS-INPUT. The kernel processes the delta, applies the patch, updates driver confidence, and emits the next machine state.
+  </Step>
+  <Step title="Continue until verdict stabilizes or item is discarded">
+    The loop repeats. Each iteration narrows the uncertainty or surfaces a falsification. The loop ends when the verdict is stable across two consecutive runs, or when a Reality Probe produces `FALSIFIED` and the item is discarded with `trigger=FALSIFICATION`.
+  </Step>
+</Steps>
+
+## The contestation protocol
+
+Any peer may set `contested=YES` for an item if it disagrees with any of the following:
+
+- A **driver** — the named causal factor the verdict depends on
+- A **driver relationship** — a connection in the impact graph (e.g., how cost links to a driver)
+- An **evidence binding** — the evidence claimed to support a driver
+- A **probe design or representativeness** — whether the probe actually tests the critical driver
+- The **verdict** itself
+
+**Rule:** if `contested=YES` and `<<<PREV>>>` exists, the `[DELTA]` output must address the contested point explicitly in `[BREAK]`. If no new evidence is introduced, the patch must either reduce uncertainty via best-ROI acquisition or narrow/split the decision if multiple independent drivers exist.
+
+If `contested=YES` and no `<<<PREV>>>` exists, the reviewer produces a full review and includes a "Contested points" list (max 3) in the `[REVIEW]` block.
+
+## The [DELTA] format
+
+Each adversarial iteration produces exactly one `[DELTA]` with one `[BREAK]` and one `[PATCH]`:
+
+```text
+[DELTA]
+[BREAK]
+- Target the single driver/relationship with the highest cost-benefit impact.
+- Show what is wrong, why it breaks net benefit, and the impact on Cost/Benefit/Risk/CostOfDelay.
+
+[PATCH]
+- Apply the minimal update that increases expected net benefit OR confidence.
+- Show updated drivers/relationships and confidence shift.
+```
+
+**Constraints:**
+
+- Only **ONE BREAK** and **ONE PATCH** per iteration.
+- Prefer structural changes (redesigned probe, split decision, new evidence tier) over local tweaks (rephrased driver, cosmetic score adjustment).
+- Each iteration must narrow uncertainty or improve evidence quality — not just restate the same concern.
+
+## Delta enforcement
+
+Every `[DELTA]` must include a causal reference to at least one of the following:
+
+- A **named driver** that changed
+- A **changed impact-graph relationship** (how drivers connect)
+- A **probe_id** that is new, updated, or expired
+- A **specific evidence item** with a tier change or new evidence
+
+If no causal reference is provided, the delta is `INVALID_DELTA`:
+
+- The kernel does not ask the human for input
+- The item's `prev_state`, `new_state`, and `verdict` remain unchanged
+- `trigger=INVALID_DELTA` is set
+- Step 1 becomes an action to generate the missing causal reference (a measurement, probe, or log extraction) — or to park the item in `STANDBY` if that is not possible
+
+## Starting a PA_PVP output for peer review
+
+To begin the adversarial loop, ask LLM-A for a standard PA_PVP output:
+
+```text
+Give me PA_PVP output for this. (for starting the adversarial AI to AI loop.)
+```
+
+The resulting snapshot is the starting state for LLM-B's review. LLM-B pastes the snapshot as input, sets `contested=YES` on any item it wants to challenge, and produces the first `[DELTA]`.
+
+## Practical setup
+
+To run two LLMs in an adversarial loop:
+
+1. Load the PA_PVP kernel into both LLM-A and LLM-B.
+2. LLM-A produces the first snapshot for a decision item.
+3. Pass LLM-A's full code block to LLM-B as input. LLM-B treats it as SNAPSHOT-AS-INPUT and reviews each item.
+4. LLM-B outputs a delta snapshot with `contested=YES` and `[DELTA]` for any challenged item.
+5. Pass LLM-B's output back to LLM-A. LLM-A continues delta-only from the updated state.
+6. Repeat until verdicts stabilize.
+
+**`AskUser = OFF` (the default)** keeps the loop clean. With `AskUser=OFF`, neither LLM will pause to ask the operator for missing evidence — they simulate, probe, or park by rule. This is the correct default for a fully automated adversarial loop.
+
+Set `AskUser = ON` when you want a human-in-the-loop checkpoint. With `AskUser=ON`, the kernel may emit one minimal evidence request per output when an item is externally blocked, irreversible, or has spent its internal probe cycle. The checkpoint fires at most once per output and only for the highest-priority eligible item.
+
+## Contestation and representativeness
+
+When a probe is `contested=YES`:
+
+- `probe.status` is set to `INCONCLUSIVE` until the contestation is resolved
+- `representativeness` is automatically capped at `MED` — the probe does **not** protect from Falsification Debt at `MED`
+- The item cannot close as validated until `contested` is resolved to `NO`, `context_match=YES`, and representativeness is evaluated and recorded
+
+A probe remains `MED`-capped for debt purposes until both conditions hold: `contested=NO` and `context_match=YES`.
+
+<Note>
+  **Meta rule:** a probe cannot use a protocol decision as `decision_context`. Self-validation is invalid — a PA_PVP run cannot serve as the probe evidence for itself. The kernel rejects this with `representativeness=LOW` and `probe.status=INCONCLUSIVE`.
+</Note>

@@ -1,0 +1,97 @@
+---
+title: "Evidence Tiers and Closure Policy in PA_PVP"
+sidebarTitle: "Evidence & Closure"
+description: "PA_PVP tracks evidence quality with tiers and enforces closure policies that determine whether a decision can close on simulated or requires real evidence."
+---
+
+The quality of the evidence behind a verdict directly affects how confident that verdict is and whether a decision is allowed to close. PA_PVP makes evidence quality explicit at every step — every claim, every rating, and every probe result carries a declared evidence tier. When evidence is weak, the kernel labels it as such rather than silently promoting simulated reasoning to the status of a real measurement. This prevents a common failure mode in AI-assisted decision-making where synthetic outputs are mistaken for empirical results.
+
+## Evidence tiers
+
+PA_PVP defines five evidence tiers in ascending quality order. Tiers are used in evidence bindings, probe log entries, new evidence injections, and the `best_evidence_tier` derivation in `[DERIVED]`.
+
+| Tier | Description | When used |
+|------|-------------|-----------|
+| `SIMULATED` | Derived by the LLM through internal reasoning, synthetic examples, or thought experiments — no external data | Default when no other evidence is available; must always be labeled as such |
+| `DERIVED` | Inferred or calculated from existing snapshot fields or assumptions; no new external input was obtained | Used when a value is computed from already-present state rather than measured directly |
+| `HISTORICAL` | Real past data or logs provided by the operator from a previous context | Injected via `<<<NEW_EVIDENCE evidence_tier=HISTORICAL>>>` |
+| `REAL` | Live measurement or direct observation in the current context | Requires `<<<NEW_EVIDENCE evidence_tier=REAL>>>` to be present in the run |
+| `EXPERIMENT` | Result of a controlled adversarial probe designed to falsify a critical driver | Requires `<<<NEW_EVIDENCE evidence_tier=EXPERIMENT>>>` to be present in the run |
+
+**Confidence caps by tier:** If `evidence_tier` is `SIMULATED` or `DERIVED`, confidence cannot be `HIGH` unless the domain is `Deterministic` and the claim is provable or tested. For `Complex` or `Chaotic` domains, `HIGH` confidence generally requires `REAL` or `EXPERIMENT` tier evidence.
+
+## Closure tiers
+
+The `ct` field in `[QUEUE]` records the closure tier for every item. It answers the question: on what quality of evidence did this decision close?
+
+| `ct` value | Meaning |
+|------------|---------|
+| `SIM` | Simulated closure — `ClosePolicy=SIM_OK` and no real evidence was provided in this run |
+| `REAL` | Evidence-backed closure — a `HISTORICAL`, `REAL`, or `EXPERIMENT` evidence object was injected for this item |
+| `-` | Item is not closed; closure tier is not applicable |
+
+A `ct=SIM` closure is valid and operational under the default profile — but it is always labeled. A downstream executor reading `ct:SIM` in `[QUEUE]` knows that the closure was derived from simulation and may want to verify before acting.
+
+## Close policy
+
+PA_PVP supports two close policies, set at the batch level via `<<<B ... close_policy=...>>>`:
+
+<Tabs>
+  <Tab title="SIM_OK (default)">
+    **`ClosePolicy=SIM_OK`** — simulated closure is allowed when real evidence is unavailable.
+
+    - Items may transition to `CLOSED` with `ct=SIM` if no `<<<NEW_EVIDENCE>>>` block is provided.
+    - The closure is labeled explicitly as `SIMULATED` — it is never presented as real.
+    - This is the default profile for `ExecCapability=NO_RUNTIME` runs.
+    - Items that receive real evidence in the same run will close with `ct=REAL` instead.
+  </Tab>
+  <Tab title="REAL_ONLY">
+    **`ClosePolicy=REAL_ONLY`** — simulated closure is not permitted.
+
+    - Items must receive a `<<<NEW_EVIDENCE evidence_tier=HISTORICAL|REAL|EXPERIMENT>>>` block to close.
+    - If real evidence is not provided, the item parks in `STANDBY` with `trigger=CLOSE_BLOCKED_REAL_ONLY`.
+    - The dominant gate for a `CLOSE_BLOCKED_REAL_ONLY` item becomes `EXTERNAL_BLOCK`.
+    - When `AskUserMode=ALLOW`, this trigger qualifies the item for an `AskUser` evidence request.
+  </Tab>
+</Tabs>
+
+**IRREVERSIBLE items:** Regardless of `ClosePolicy`, any item declared with `reversibility=IRREVERSIBLE` always requires real evidence to close. If no real evidence is provided, the item parks in `STANDBY` with `trigger=CLOSE_BLOCKED_REAL_ONLY`. This rule cannot be overridden by `ClosePolicy=SIM_OK`.
+
+## Injecting evidence
+
+To provide real evidence for an item — to close a `REAL_ONLY` item, to reopen a `CLOSED` item, or to upgrade evidence tier — use the `<<<NEW_EVIDENCE>>>` block inside the item wrapper:
+
+```text
+<<<NEW_EVIDENCE evidence_tier=HISTORICAL|REAL|EXPERIMENT>>>
+<evidence payload — logs, measurements, outcomes, citations>
+```
+
+The `evidence_tier` token must be one of `HISTORICAL`, `REAL`, or `EXPERIMENT`. Injected evidence upgrades the `best_evidence_tier` in `[DERIVED]` and may allow the item to close with `ct=REAL` when it otherwise would not.
+
+**When to use `<<<NEW_EVIDENCE>>>`:**
+
+- To provide real measurement data from a completed experiment or probe
+- To supply historical logs or past outcomes as a basis for closure
+- To satisfy a `REAL_ONLY` closure requirement
+- To reopen a `CLOSED` item when the original closure tier was `ct=REAL`
+
+## CLOSED revisit rules
+
+A `CLOSED` item is protected against arbitrary reopening. The kernel enforces strict conditions before allowing an item to transition out of `CLOSED`:
+
+<CardGroup cols={2}>
+  <Card title="ct=REAL closure" icon="lock">
+    Reopening requires `<<<NEW_EVIDENCE>>>` with `evidence_tier` in `{HISTORICAL, REAL, EXPERIMENT}`. A `<<<CHANGE>>>` declaration alone is insufficient for a real-evidence-backed closure.
+  </Card>
+  <Card title="ct=SIM closure" icon="flask">
+    Reopening requires either `<<<NEW_EVIDENCE>>>` (same tiers as above) OR a `<<<CHANGE>>>` declaration listing the facts, assumptions, or drivers that changed.
+  </Card>
+</CardGroup>
+
+**Reopen budget cap:** Each item carries a `reopen_total` counter in `[DERIVED]`. If `PREV.reopen_total >= 1` for a given item id, reopening is blocked even if the evidence or change condition would otherwise be satisfied. The item remains `CLOSED` and the trigger is set to `REOPEN_BLOCKED_BUDGET`.
+
+**Missing delta:** If the required evidence or change declaration is absent, reopening is blocked. The item remains `CLOSED` with `trigger=REOPEN_BLOCKED_NO_DELTA`. The kernel does not ask the operator for input in this case.
+
+<Warning>
+Do not use outputs marked `OutputValidity: INVALID` in `[PANEL]` as `<<<PREV>>>` input or as a `SNAPSHOT-AS-INPUT` for the next run. Invalid outputs are diagnostic only and must not be used to recover machine state. If a previous output is invalid, start fresh or use the last valid snapshot.
+</Warning>

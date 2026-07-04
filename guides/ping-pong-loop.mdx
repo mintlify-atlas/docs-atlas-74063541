@@ -1,0 +1,108 @@
+---
+title: "Running the PA_PVP Ping-Pong Decision Loop"
+sidebarTitle: "Ping-Pong Loop"
+description: "PA_PVP is designed to run multiple times on the same decision. Paste a prior output back as input and the kernel continues delta-only from the previous state."
+---
+
+PA_PVP is stateful by design. Each run produces a machine snapshot you can paste back as input, and the kernel picks up exactly where it left off — advancing steps, simulating outcomes, updating verdicts, and emitting only what changed. You never restart from zero unless you want to.
+
+## The basic loop
+
+<Steps>
+  <Step title="Submit your item">
+    Write a plain-language description or use a formal `<<<I ...>>>` wrapper with a mode block (`<<<PLAN>>>`, `<<<ARTIFACT>>>`, or `<<<TOOL>>> + <<<TARGET>>>`). Paste it into your LLM with the PA_PVP kernel loaded.
+  </Step>
+  <Step title="Read the machine code block output">
+    The kernel returns a single code block starting with `STATE: DECISION.TEST.FINAL`. Inside it, `[QUEUE]` shows your item's verdict and `[NEXT]` shows the single executable next action. The human table after the code block is for scanning only.
+  </Step>
+  <Step title="Execute or simulate [NEXT]">
+    Carry out the `[NEXT]` step in reality, or let the kernel simulate it on the next run. Either way, the state is ready for continuation.
+  </Step>
+  <Step title="Paste the entire prior output back as input">
+    Copy the complete code block (from `STATE: DECISION.TEST.FINAL` to the last `[ITEM id=...]` block) and paste it as your next message. This is SNAPSHOT-AS-INPUT — no manual editing required.
+  </Step>
+  <Step title="PA_PVP continues delta-only">
+    The kernel detects the snapshot, auto-recovers per-item previous state, and outputs only what changed. Unchanged sections are omitted to keep the output compact. `[PANEL]` and `[QUEUE]` are always re-emitted globally.
+  </Step>
+</Steps>
+
+## SNAPSHOT-AS-INPUT explained
+
+A valid snapshot is a prior PA_PVP output that contains all of the following:
+
+```text
+STATE: DECISION.TEST.FINAL
+
+[PANEL]
+...
+
+[QUEUE]
+...
+
+[ITEM id=E1]
+...
+```
+
+The routing rule is simple: if the raw input contains a line starting with `STATE: DECISION.` **and** contains `[PANEL]`, `[QUEUE]`, and at least one `[ITEM id=...]` block, but contains **no** `<<<I ...>>>` wrappers, the kernel treats the entire input as SNAPSHOT-AS-INPUT. It auto-recovers an implicit `<<<PREV>>>` for each detected `[ITEM id=...]` block and processes each recovered id as delta-only ping-pong.
+
+Any text after the code block — including the human table — is ignored. The kernel's routing reads only the code block.
+
+## Delta-only output
+
+In delta-only mode, the kernel outputs the minimum needed to express what changed. For each item with recovered `PREV`:
+
+- `[DERIVED]` — updated derived fields (item_exec_mode, terminal, best_evidence_tier, events, counters)
+- `[DELTA]` — one `[BREAK]` and one `[PATCH]` describing what changed and the minimal update
+- `[VERDICT_UPDATE]` — only if the verdict changed
+- `[STEPS]` — updated steps
+- `[NEXT]` — the new next action
+
+Unchanged blocks are omitted entirely. `[PANEL]` and `[QUEUE]` are still emitted globally on every run because they are batch-level surfaces. Per-item blocks not listed above are not re-emitted unless a higher-priority rule forces them (such as a gate change that triggers DEBUG scale).
+
+## Advancing the [NEXT] step
+
+PA_PVP uses an AI execution model: when previous state exists, the kernel attempts to execute the current `[NEXT]` step **within the current run**, without requiring you to execute it first. This means:
+
+- If the step can be completed by simulation, the kernel closes it and advances to the next step.
+- If the step requires external reality (runtime, live data, human action) and that is unavailable, the kernel simulates the best available outcome with `evidence_tier=SIMULATED` and applies confidence caps — **or** transitions the item to `STANDBY` with `trigger=BLOCKED_EXTERNAL`.
+- The item is never transitioned to `DISCARDED` by external blocking alone; discard requires a higher-priority terminal rule.
+
+## Mixed input: new items + snapshot
+
+You can include both new `<<<I ...>>>` wrappers and a prior snapshot in the same input. The kernel handles both simultaneously:
+
+- For any `<<<I id=...>>>` that matches an `[ITEM id=...]` in the snapshot but has no explicit `<<<PREV>>>`, the kernel auto-recovers `<<<PREV>>>` from the snapshot. These items get delta-only output, and their `[ITEM_PANEL]` is marked:
+
+  ```text
+  prev_source=SNAPSHOT_RECOVERED
+  ```
+
+- For any `<<<I id=...>>>` with no matching id in the snapshot, the kernel treats it as a brand-new item with no prior state. It receives full output.
+
+- The snapshot continues to serve as previous state for all existing ids not explicitly resubmitted.
+
+## When NOT to use SNAPSHOT-AS-INPUT
+
+Do not use a prior output as SNAPSHOT-AS-INPUT if `[PANEL]` contains:
+
+```text
+OutputValidity: INVALID
+```
+
+Invalid output is **diagnostic only**. Recovering snapshot state from it is blocked by the kernel's Invalid Output Consumer Contract. There are two invalidation reasons:
+
+- **`BATCH_COVERAGE`** — one or more input ids were missing from the output, or extra ids appeared that were not introduced by an explicit split.
+- **`CODE_BLOCK_PURITY`** — forbidden content (narrative, explanations, apologies) appeared inside the machine code block.
+
+If you receive an invalid output, diagnose the issue and start a fresh run rather than pasting the invalid output back.
+
+## Practical tips
+
+- Keep the **entire** code block when copying — from `STATE: DECISION.TEST.FINAL` through the last `[ITEM id=...]` closing line. Partial snapshots may fail coverage checks.
+- Do **not** edit the snapshot before pasting. The kernel's delta logic compares against the exact prior state. Manual edits break the comparison and may produce unexpected behavior.
+- The human table that appears after the code block is ignored by the kernel. You do not need to strip it — just paste everything.
+- If an item transitioned to `EXPIRED` in a prior run, re-submitting the same id automatically transitions it from `EXPIRED -> DRAFT` and starts a fresh full run for that item.
+
+<Tip>
+  For quick continuation, paste the code block and write "continue" — PA_PVP will advance all open items using the AI execution model, simulating or parking each `[NEXT]` step as appropriate.
+</Tip>

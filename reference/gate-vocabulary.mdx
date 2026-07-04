@@ -1,0 +1,212 @@
+---
+title: "PA_PVP Gate Vocabulary and Trigger Reference"
+sidebarTitle: "Gate Vocabulary"
+description: "Complete reference for all PA_PVP gate tokens, their trigger conditions, and how they affect verdict routing, execution mode, and output structure."
+---
+
+Gates are the routing and diagnostic layer of PA_PVP. Each item carries exactly one `dominant_gate` value — the highest-priority governance condition active in the current run. Gates are derived, not declared: the kernel applies the `DOMINANT_GATE_MAP` to the item's active trigger and selects the single winning gate by precedence order. Gates affect verdict routing, execution mode (`ds`), output scale, and which sub-blocks are emitted. They must not invent new semantics beyond what is defined in the kernel.
+
+---
+
+## Gate Tokens
+
+### FAIL_FAST_CUT
+
+**When triggered:** A PLAN item failed the SNR gate twice. CUT MODE was reached: `fail_fast_count >= 2` for the item id. The plan lacked a real goal state or hard constraint in both attempts and the kernel could not auto-derive minimal specs.
+
+**Effect on verdict and state:** `verdict = DISCARD`, `new_state = DISCARDED`. Terminal.
+
+**Effect on execution mode (ds):** `ds = NO_TOOL`. No execution steps are emitted.
+
+**Related fields in [ITEM_PANEL]:** `fail_fast_count: 2`, `trigger: FAIL_FAST_CUT`, `dominant_gate: FAIL_FAST_CUT`.
+
+---
+
+### FALSIFICATION
+
+**When triggered:** A Reality Probe contradicted the critical driver. Specifically: a probe entry with `status = FALSIFIED`, `context_match = YES`, and `representativeness = HIGH` was found for this item's critical driver.
+
+**Effect on verdict and state:** `verdict = DISCARD`, `new_state = DISCARDED`. Terminal. This is the Falsification Principle fast-discard path — it takes highest precedence after FAIL_FAST_CUT.
+
+**Effect on execution mode (ds):** `ds = NO_TOOL`.
+
+**Related fields in [ITEM_PANEL]:** `trigger: FALSIFICATION`, `dominant_gate: FALSIFICATION`. The `[PROBE_LOG]` entry that triggered falsification will be present if probe log rules allow it.
+
+---
+
+### DEBT_CEILING
+
+**When triggered:** Two active falsification debt drivers have been reached for the batch. The kernel caps debt at 2 active drivers (`Governance: FalsificationDebtDrivers n/2`).
+
+**Effect on verdict and state:** Verdict is constrained. The item cannot freely close or advance until debt is reduced. Items at the debt ceiling are blocked from reaching CLOSED.
+
+**Effect on execution mode (ds):** `ds = SLOW`. Execution proceeds with caution — probe steps are required.
+
+**Related fields in [ITEM_PANEL]:** `falsification_debt: OPEN(driver)`, `dominant_gate: DEBT_CEILING`. In `[PANEL]`, `Governance` shows `FalsificationDebtDrivers 2/2`.
+
+---
+
+### FRAGILITY
+
+**When triggered:** The decision score is near an impact threshold (within the fragility boundary). For FULL profile: score within 5 points of the 40 or 70 thresholds (i.e., 35–45 or 65–75). For DIY profile: raw score is on a boundary value (raw in {0, 1, 3, 4}).
+
+**Effect on verdict and state:** Item enters PROBING (`new_state = PROBING`) unless Cost of Delay is HIGH, in which case a Hedge Action is allowed — but the item still stays PROBING, not CLOSED. The decision cannot be finalized to CLOSED in this run unless a probe resolves the boundary.
+
+**Effect on execution mode (ds):** `ds = SLOW` (PROBING state forces SLOW).
+
+**Related fields in [ITEM_PANEL]:** `trigger: FRAGILITY`, `dominant_gate: FRAGILITY`. `[PROBE_LOG]` is required. If Cost of Delay is HIGH, `hedge_action: ACTIVE` and `falsification_debt: OPEN(...)` are also present.
+
+---
+
+### DEPENDENCY_BLOCK
+
+**When triggered (two paths):**
+1. A declared `depends_on` item is not yet CLOSED or DISCARDED. Execution is blocked at Step 1, which must address the blocking dependency (resolve it or explicitly waive it).
+2. A resource overload demotion occurred: the item was ACTIVE but was demoted to STANDBY because demand for a declared resource exceeded batch capacity.
+
+**Effect on verdict and state:** The verdict is kept, but execution is blocked. The item stays in its current state with `trigger = DEPENDENCY_BLOCK`. Step 1 is the earliest non-conflicting step to resolve the blocking dependency, wait for resource availability, or split/sequence execution.
+
+**Effect on execution mode (ds):** `ds = SLOW` (or `NO_TOOL` if other conditions apply).
+
+**Related fields in [ITEM_PANEL]:** `depends_on: [...]`, `trigger: DEPENDENCY_BLOCK`, `dominant_gate: DEPENDENCY_BLOCK`. Also used for `REOPEN_BLOCKED_NO_DELTA`, `REOPEN_BLOCKED_BUDGET`, `DUPLICATE_ID_REJECTED`, and `MISSING_SOURCE_INPUT` triggers — all route to `DEPENDENCY_BLOCK` via `DOMINANT_GATE_MAP`.
+
+---
+
+### CONFIDENCE_CAP
+
+**When triggered:** The critical driver's confidence was capped deterministically. This happens when a dependency was explicitly waived (blind-risk acceptance forces confidence cap to LOW), or when other cap conditions apply (contested item, context_match != YES, representativeness != HIGH, or tier/domain cap).
+
+**Effect on verdict and state:** Verdict is not blocked, but the item must not close until confidence improves. A probe/acquisition step is required to reduce uncertainty.
+
+**Effect on execution mode (ds):** `ds = SLOW`.
+
+**Related fields in [ITEM_PANEL]:** `critical_driver_confidence: LOW`, `trigger: CONFIDENCE_CAP_APPLIED`, `dominant_gate: CONFIDENCE_CAP`, `falsification_debt: OPEN(driver)` (if a dependency was waived).
+
+---
+
+### EXTERNAL_BLOCK
+
+**When triggered:** The item requires external data or an action that is unavailable in the current run. This covers three specific trigger conditions that form the `EXTERNAL_BLOCK_LOCK_TRIGGERS` set: `BLOCKED_EXTERNAL`, `EXTERNAL_DATA_REQUIRED`, and `CLOSE_BLOCKED_REAL_ONLY`.
+
+**Effect on verdict and state:** Default behavior is to simulate the best-available outcome (`evidence_tier = SIMULATED`, confidence capped) and continue, OR transition to `STANDBY` with `trigger = BLOCKED_EXTERNAL`. The item is only DISCARDED if a higher-priority terminal rule already forces it.
+
+**Effect on execution mode (ds):** `ds = SLOW`.
+
+**Related fields in [ITEM_PANEL]:** `trigger: BLOCKED_EXTERNAL | EXTERNAL_DATA_REQUIRED | CLOSE_BLOCKED_REAL_ONLY`, `dominant_gate: EXTERNAL_BLOCK`. This gate is also the eligibility criterion for `AskUser` activation when `AskUserMode = ALLOW`.
+
+---
+
+### REDESIGN_TRIGGER
+
+**When triggered (any one condition is sufficient):**
+- `probe_cycle_total (pc) >= 2` with critical driver confidence still LOW/MED and `best_evidence_tier` still SIMULATED/DERIVED.
+- The same critical uncertainty remained MED for 2 consecutive iterations with no evidence tier upgrade.
+- INCONCLUSIVE status repeated 2 times in a row for the same `target_driver`.
+- `OVERRIDE_REPR(owner)` used more than once in the probe log for this item.
+- `near_miss_total (nm) >= 2` with `best_evidence_tier` in {SIMULATED, DERIVED}.
+- A probe harness redesign attempt was invalid (none of `decision_context_metric`, `constraint_signature`, or `kill_switch.condition` changed vs PREV).
+- Triggers `CIRCULAR_DEPENDENCY`, `INVALID_DELTA`, `PROBE_STALL_CONTEXT_MATCH`, or `MULTI_CRITICAL_DRIVER_SPLIT` also route here.
+- Timebox budget exceeded or complexity tax exceeded (weak evidence and high complexity).
+
+**Effect on verdict and state:** The next output follows Redesign Selection — the kernel chooses exactly one: (A) redesign the probe if a new observable proxy/metric/kill-switch/constraint_signature is available; (B) split the decision if multiple independent drivers exist; (C) park STANDBY if no bounded redesign path exists; (D) DISCARD only if a higher-priority terminal rule forces it.
+
+**Effect on execution mode (ds):** `ds = SLOW`.
+
+**Related fields in [ITEM_PANEL]:** `trigger: REDESIGN_TRIGGER`, `dominant_gate: REDESIGN_TRIGGER`. Check `[PROBE_LOG]` counters (`pc`, `nm`, `inc`) for the specific stall pattern.
+
+---
+
+### SCORE_TRIAGE
+
+**When triggered:** Reserved for explicit score/impact routing only — when the score or impact bucket is the sole active reason changing priority, queue position, or verdict, and no blocking or governance trigger is active.
+
+**Effect on verdict and state:** Routes the item to a different priority tier based on impact. Does not block or demote by itself.
+
+**Effect on execution mode (ds):** Normal (`OK` unless other conditions apply).
+
+**Related fields in [ITEM_PANEL]:** `trigger: SCORE_TRIAGE`, `dominant_gate: SCORE_TRIAGE`.
+
+<Warning>
+  `SCORE_TRIAGE` must not be used to expand output scale or justify extra structure. It is a lightweight routing signal only, and is only set when score/impact is the only active reason for the routing change.
+</Warning>
+
+---
+
+### NONE
+
+**When triggered:** No active governance gate. All governance conditions are clear.
+
+**Effect on verdict and state:** Normal execution. Verdict and state follow the standard scoring and lifecycle rules without modification.
+
+**Effect on execution mode (ds):** `OK` (unless other conditions force SLOW).
+
+**Related fields in [ITEM_PANEL]:** `dominant_gate: NONE`. Items with `gate: NONE` in `[QUEUE]` are clean and ready for normal execution.
+
+---
+
+## Dominant Gate Precedence
+
+When multiple governance conditions are true in the same run, the kernel applies exactly one dominant gate. The gate is selected by the first match in this ordered list (highest priority first):
+
+| Priority | Gate |
+|---|---|
+| 1 | `FAIL_FAST_CUT` |
+| 2 | `FALSIFICATION` |
+| 3 | `DEBT_CEILING` |
+| 4 | `FRAGILITY` |
+| 5 | `DEPENDENCY_BLOCK` |
+| 6 | `CONFIDENCE_CAP` |
+| 7 | `EXTERNAL_BLOCK` |
+| 8 | `REDESIGN_TRIGGER` |
+| 9 | `SCORE_TRIAGE` |
+| 10 | `NONE` |
+
+The kernel derives gates from already-active triggers only. It does not add new semantics. `DOMINANT_GATE_MAP` is the single mapping table that translates trigger tokens to gate values.
+
+---
+
+## Trigger Tokens
+
+Trigger tokens are the raw condition labels set on items during kernel execution. They feed into `DOMINANT_GATE_MAP` to produce the `dominant_gate`. A trigger is set in `[ITEM_PANEL].trigger`; the gate is derived from it.
+
+| Trigger | Gates to | Meaning |
+|---|---|---|
+| `FAIL_FAST_CUT` | `FAIL_FAST_CUT` | PLAN reached CUT MODE (fail_fast_count = 2). |
+| `FALSIFICATION` | `FALSIFICATION` | Probe contradicted the critical driver with context_match=YES and HIGH representativeness. |
+| `DEBT_CEILING` | `DEBT_CEILING` | Two active debt drivers reached the batch cap. |
+| `FRAGILITY` | `FRAGILITY` | Decision score within fragility boundary of an impact threshold. |
+| `DEPENDENCY_BLOCK` | `DEPENDENCY_BLOCK` | Declared dependency not resolved, or resource overload demotion. |
+| `CONFIDENCE_CAP_APPLIED` | `CONFIDENCE_CAP` | Critical driver confidence was capped (waiver, contested, tier/domain cap). |
+| `BLOCKED_EXTERNAL` | `EXTERNAL_BLOCK` | Item requires external reality unavailable in this run; best-effort simulation applied. |
+| `EXTERNAL_DATA_REQUIRED` | `EXTERNAL_BLOCK` | Item needs external data it cannot internally derive or simulate adequately. |
+| `CLOSE_BLOCKED_REAL_ONLY` | `EXTERNAL_BLOCK` | Item needs REAL evidence to close (ClosePolicy=REAL_ONLY or IRREVERSIBLE) but none was provided. |
+| `REDESIGN_TRIGGER` | `REDESIGN_TRIGGER` | Probe loop stalled; next output follows redesign selection. |
+| `INVALID_DELTA` | `REDESIGN_TRIGGER` | DELTA had no causal reference (no named driver, probe_id, or evidence change). |
+| `PROBE_STALL_CONTEXT_MATCH` | `REDESIGN_TRIGGER` | INCONCLUSIVE repeated twice with context_match in {NO, UNKNOWN} for the same target_driver. |
+| `CIRCULAR_DEPENDENCY` | `REDESIGN_TRIGGER` | A dependency cycle was detected among batch items. |
+| `DUPLICATE_ID_REJECTED` | `DEPENDENCY_BLOCK` | Second occurrence of a duplicate id within the same batch was rejected. |
+| `REOPEN_BLOCKED_BUDGET` | `DEPENDENCY_BLOCK` | Reopen blocked because reopen_total >= 1 in PREV (budget cap reached). |
+| `REOPEN_BLOCKED_NO_DELTA` | `DEPENDENCY_BLOCK` | Reopen blocked because no `<<<NEW_EVIDENCE>>>` or `<<<CHANGE>>>` was provided. |
+| `SCORE_TRIAGE` | `SCORE_TRIAGE` | Score/impact is the only active routing reason; no governance trigger is active. |
+
+<Note>
+  The trigger token is always the raw condition label. `DOMINANT_GATE_MAP` applies the first-match rule: if a trigger matches an earlier entry in the map, the later entries do not apply. For example, `CIRCULAR_DEPENDENCY` routes to `REDESIGN_TRIGGER`, not `DEPENDENCY_BLOCK`, even though the cycle involves dependencies.
+</Note>
+
+---
+
+## Domain Expiry Defaults
+
+When no explicit `expire_days` is set at the item or batch level, the kernel derives the effective expiry from the item's `domain_type`. This is the fallback resolution order step 4 in lifecycle expiry resolution.
+
+| Domain | Default Expiry |
+|---|---|
+| Chaotic | 1 day |
+| Probabilistic | 7 days |
+| Complex | 60 days |
+| Deterministic | 365 days |
+| Unknown / not set | 30 days (fallback) |
+
+<Note>
+  Gates are diagnostic and routing-oriented. They must not invent new semantics beyond what is defined in the kernel. If you find a gate being used to justify behavior that is not explicitly described in `PA_PVP_full_v9.9.0_canonical.txt`, that is a kernel misapplication — the kernel text governs.
+</Note>

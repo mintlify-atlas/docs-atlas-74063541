@@ -1,0 +1,90 @@
+---
+title: "Generating PA_PVP Reports from Decision Snapshots"
+sidebarTitle: "Reports"
+description: "REPORT and REPORT LITE are read-only render commands that produce human-readable summaries derived from an existing PA_PVP snapshot without changing any state."
+---
+
+Reports are derived views over an existing PA_PVP snapshot. They are read-only rendering passes — they never change verdicts, gates, triggers, steps, or any facts. They produce no machine state, no code block, and no `STATE: DECISION.*` header. Use them to share a human-readable view with stakeholders, review a prior run before continuing, or check the DO NOW list after a complex batch.
+
+## Two report modes
+
+<Tabs>
+  <Tab title="REPORT LITE">
+    **REPORT LITE** is a one-page scan-first summary designed for quick review. It contains:
+
+    - Counts: how many items are `DO NOW`, `DO LATER`, and `DISCARD`
+    - The full `DO NOW` list with item ids
+    - Top blockers (systemic gates)
+    - Per-item next token when the step is executable
+
+    Invoke it by writing `REPORT LITE` as the first line, then pasting the entire PA_PVP snapshot:
+
+    ```text
+    REPORT LITE
+    <paste the entire PA_PVP output snapshot here>
+    ```
+
+    REPORT LITE is best for async handoff, daily standup, or any situation where you need a fast scan of what to act on next.
+  </Tab>
+  <Tab title="REPORT">
+    **REPORT** is a full derived report. It includes per-item panels, steps, and mechanical metrics wherever they can be derived from the snapshot.
+
+    Invoke it by writing `REPORT` as the first line, then pasting the entire PA_PVP snapshot:
+
+    ```text
+    REPORT
+    <paste the entire PA_PVP output snapshot here>
+    ```
+
+    REPORT is better for detailed review, audit, or any situation where stakeholders need to see the full decision rationale, driver analysis, and probe history.
+  </Tab>
+</Tabs>
+
+## Report output rules
+
+Reports are strictly read-only derived renders. A valid report output:
+
+- Contains **no code blocks**
+- Contains **no `STATE: DECISION.*`** line
+- Makes **no changes** to verdicts, gates, triggers, or steps
+- Introduces **no new facts** not present in the snapshot
+
+If a value is missing from the snapshot — for example, a driver confidence level or an expiry date — the report prints:
+
+```text
+missing in snapshot
+```
+
+It does not invent, interpolate, or estimate missing values.
+
+## When to use reports
+
+| Situation | Recommended mode |
+|---|---|
+| Daily standup or async handoff | REPORT LITE |
+| Sharing a decision summary with stakeholders | REPORT LITE |
+| Reviewing a prior run before continuing the ping-pong loop | REPORT |
+| Checking top DO NOW actions after a complex multi-item batch | REPORT LITE |
+| Audit or detailed review of driver analysis and probe history | REPORT |
+
+Reports are particularly useful when you want to share the state of a decision with someone who does not need to continue the loop — they get the full human-readable view without receiving a machine snapshot they might accidentally paste back as input.
+
+## Error handling
+
+If the first non-empty line of input is exactly `REPORT` or `REPORT LITE` but the snapshot is missing or malformed, the kernel outputs exactly:
+
+```text
+ERROR: missing or invalid snapshot
+```
+
+and stops. It does not attempt to produce a partial report or ask for the missing snapshot. Re-run with the full snapshot pasted after the `REPORT` or `REPORT LITE` command.
+
+A snapshot is considered malformed if it does not contain a line starting with `STATE: DECISION.`, or if it is missing `[PANEL]`, `[QUEUE]`, or any `[ITEM id=...]` blocks.
+
+<Warning>
+  Reports are **not reusable state**. Never use a REPORT or REPORT LITE output as `<<<PREV>>>` or as SNAPSHOT-AS-INPUT for a new decision run. Report outputs contain no machine code block and no `STATE: DECISION.*` header — the kernel will reject them or fail to recover any prior state from them.
+</Warning>
+
+<Tip>
+  REPORT LITE is best for daily standup or async handoff where you need a fast scan of what to act on. REPORT is better for detailed review or audit where stakeholders need full decision rationale, step history, and mechanical metrics.
+</Tip>

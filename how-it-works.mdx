@@ -1,0 +1,121 @@
+---
+title: "How PA_PVP Works: Decision Loop and State Machine"
+sidebarTitle: "How It Works"
+description: "PA_PVP applies a deterministic behavioral contract to turn uncertain situations into forced verdicts, executable steps, and resumable state snapshots."
+---
+
+PA_PVP works by making the LLM the execution engine of a behavioral contract. When you paste the kernel into the system prompt, the model is not given instructions to follow loosely — it is bound to a contract that specifies output format, routing rules, verdict semantics, lifecycle states, and closure policy in enough detail that generating discussion instead of decisions would violate the contract's structural requirements. The LLM must produce a state header, a queue, and an executable next step, or the output is non-operational by definition.
+
+## The decision loop
+
+<Steps>
+  <Step title="Load the kernel">
+    Copy the full contents of `PA_PVP_full_v9.9.0_canonical.txt` into your LLM session — either in the system prompt or pasted at the very start of the conversation. The kernel is the authority surface. All routing, verdict, lifecycle, and output rules live inside it.
+  </Step>
+
+  <Step title="Submit an item">
+    Provide a plan, artifact, trade-off, or blocker. You can use plain language on the first run. For structured multi-item batches, use the `<<<I id=...>>>` wrapper with one of the three input modes: `<<<PLAN>>>`, `<<<ARTIFACT>>>`, or `<<<TOOL>>> + <<<TARGET>>>`. The kernel routes the input automatically based on the mode it detects.
+  </Step>
+
+  <Step title="Get a verdict and [NEXT]">
+    The LLM produces exactly one machine code block starting with `STATE: DECISION.TEST.FINAL`. Inside it, the `[QUEUE]` line for each item contains the verdict (`DO NOW`, `DO LATER`, or `DISCARD`), lifecycle state transition, impact, urgency, gate, and the first step token. The `[NEXT]` block names the single executable action for the run. A human-readable `[HUMAN_TABLE]` follows the code block for scanning.
+  </Step>
+
+  <Step title="Paste back to continue">
+    Paste the entire prior code block as your next input. The kernel detects the snapshot, recovers per-item state automatically, and produces a delta-only output that advances each item from where it left off. No manual editing of the previous output is required. The loop continues until items reach a terminal state (`CLOSED`, `DISCARDED`, or `EXPIRED`).
+  </Step>
+</Steps>
+
+## The execution contract
+
+The kernel's primary goal is to **close decisions reproducibly** — from trivial reversible choices to high-impact architecture or procurement decisions — without requiring the operator to manage state manually between runs.
+
+Three fields in `[PANEL]` define the default run profile:
+
+- **`ExecCapability=NO_RUNTIME`** — the LLM has no access to external execution. All steps are simulated internally. This is the default for every run unless explicitly overridden in the batch header with `exec_capability=RUNTIME_OK`.
+- **`ClosePolicy=SIM_OK`** — simulated closure is permitted but must be labeled. When an item closes under `NO_RUNTIME`, the closure tier in `[QUEUE]` is `ct:SIM`. Irreversible items or items explicitly marked `REAL_ONLY` cannot close as simulated; they park in `STANDBY` with `trigger=CLOSE_BLOCKED_REAL_ONLY` until real evidence is provided.
+- **`AskUser=OFF`** — the kernel does not ask the operator for missing evidence by default. When evidence is absent, it simulates the best available outcome (marking it as `evidence_tier=SIMULATED`), parks the item in `STANDBY`, or discards it by rule. Setting `AskUser=ON` in the kernel unlocks one minimal evidence request per run, but the request is gated: the item must be non-terminal, externally blocked, and mechanically eligible.
+
+## Input modes
+
+Each wrapped item uses exactly one input mode. The mode tells the kernel how to process the payload.
+
+<Tabs>
+  <Tab title="PLAN mode">
+    Use `<<<PLAN>>>` when you have a list of options, steps, or a course of action to push through the decision loop. The kernel applies a fail-fast signal-to-noise gate before reviewing: if the plan lacks a clear goal state or hard constraint, it auto-derives minimal specs as `SIMULATED` and continues (in default `NO_LOOK` mode) rather than asking for input.
+
+    ```text
+    <<<I id=E1 title="deployment strategy" keep_open=NO expire_days=30 depends_on= uses= reversibility=>>>
+    <<<PLAN>>>
+    - option A: blue-green deployment with manual approval gate
+    - option B: canary release with automated rollback on error rate > 1%
+    - option C: direct cut-over with rollback plan pre-staged
+    <<<END>>>
+    ```
+  </Tab>
+  <Tab title="ARTIFACT mode">
+    Use `<<<ARTIFACT>>>` when you want to audit or optimize a prompt, document, protocol, code file, or any other existing artifact. The kernel runs a structural audit using the `ARTIFACT AUDIT CONTRACT` and does not ask for a plan. Use this mode for validation, not for deciding between options.
+
+    ```text
+    <<<I id=E2 title="prompt audit" keep_open=NO expire_days=14 depends_on= uses= reversibility=>>>
+    <<<ARTIFACT>>>
+    You are a helpful assistant. Answer the user's question clearly and concisely.
+    If you are unsure, say so. Do not make up information.
+    <<<END>>>
+    ```
+  </Tab>
+  <Tab title="TARGET ANALYSIS mode">
+    Use `<<<TOOL>>> + <<<TARGET>>>` when you want to apply a specific checklist, standard, or analysis tool to a target artifact. The tool audits the target — roles do not invert. This mode is for structured audits where the evaluation framework is distinct from the thing being evaluated.
+
+    ```text
+    <<<I id=E3 title="security review" keep_open=NO expire_days=7 depends_on= uses= reversibility=>>>
+    <<<TOOL>>>
+    OWASP Top 10 (2021) — web application security risk checklist
+    <<<TARGET>>>
+    [paste the endpoint handler or configuration block here]
+    <<<END>>>
+    ```
+  </Tab>
+</Tabs>
+
+## Output structure
+
+Every valid PA_PVP decision run produces exactly two output surfaces.
+
+**The machine code block** is the single source of truth (SSOT) for state. It is the only surface you paste back on the next run. The sections inside the code block appear in this order:
+
+| Section | Purpose |
+|---|---|
+| `STATE: DECISION.TEST.FINAL` | Required state header. If missing, the output is non-operational. |
+| `[USER_PANEL]` | Derived scan surface: verdict counts, top gates, DO NOW list, next actions. Adds no new semantics. |
+| `[PANEL]` | Run metadata: protocol, scale, exec capability, close policy, AskUser mode, validity. |
+| `[QUEUE]` | One line per item: `id \| prev_state->new_state \| verdict \| impact \| urgency \| ds \| term \| ct \| pp \| exp \| gate \| step1` |
+| `[ITEM id=...]` | Full per-item decision block: drivers, scores, steps, probe log, delta (one block per item). |
+
+**The human table (`[HUMAN_TABLE]`)** is a derived markdown table placed after the code block. It maps directly from `[QUEUE]` and is for reading only — it adds no new semantics and is ignored by SNAPSHOT-AS-INPUT. Never paste the human table back as machine state.
+
+## SNAPSHOT-AS-INPUT
+
+When you paste an entire prior PA_PVP output as the next input (a full snapshot containing `STATE: DECISION.*`, `[PANEL]`, `[QUEUE]`, and one or more `[ITEM id=...]` blocks), the kernel switches into **SNAPSHOT-AS-INPUT** mode automatically. No wrappers are needed.
+
+In this mode, the kernel:
+
+1. Detects the snapshot and treats it as previous state, not as a new plan payload.
+2. Auto-recovers an implicit `<<<PREV>>>` for every `[ITEM id=...]` block it finds in the snapshot.
+3. Processes each recovered item as **delta-only ping-pong**: it advances the item from its current state by attempting to execute the current `[NEXT]` step within its timebox.
+4. If a step is blocked by external reality, it simulates the best available outcome or transitions the item to `STANDBY` with `trigger=BLOCKED_EXTERNAL`.
+
+No manual cutting or editing of the previous output is required. The only rule is to paste the code block — the text from `STATE: DECISION.TEST.FINAL` through the last `[ITEM id=...]` line — not the human table that follows it.
+
+## Scalable output
+
+PA_PVP scales output by the state and risk profile of each item, not by a fixed verbosity setting.
+
+- **`MIN_SURFACE`** is used for low-impact items or DIY-profile decisions. The output stays short: `[PANEL]`, `[QUEUE]`, and a compact item block. Small decisions do not produce heavyweight output by default.
+- **Full (DEBUG) structure** expands automatically when an item is contested (`contested=YES`), has an active dominant gate (anything other than `NONE`), or enters `PROBING` state. The expanded structure includes `[ARTIFACT_AUDIT]`, `[PROBE_LOG]`, `[DERIVED]` counters, and `[DELTA]` break-and-patch cycles as applicable.
+
+You can force full structure for all items on a run by setting `ssot_scale=DEBUG` in the optional batch header (`<<<B ... ssot_scale=DEBUG>>>`). The default is `MIN`.
+
+<Note>
+  The kernel file — `PA_PVP_full_v9.9.0_canonical.txt` — is the authority surface for all execution semantics, routing rules, verdict definitions, lifecycle states, and output format requirements. The README and this documentation are human explanation only. When the docs and the kernel conflict, the kernel wins.
+</Note>

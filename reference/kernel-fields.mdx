@@ -1,0 +1,343 @@
+---
+title: "PA_PVP Kernel Fields and Block Reference"
+sidebarTitle: "Kernel Fields"
+description: "Complete reference for every input wrapper, output block, and field token in the PA_PVP kernel, including the batch header, item wrapper, [PANEL], [QUEUE], and [ITEM] blocks."
+---
+
+This page is the complete field reference for the PA_PVP kernel. Consult it when building or debugging PA_PVP inputs and outputs — every wrapper token, block name, and field value documented here maps directly to execution semantics in `PA_PVP_full_v9.9.0_canonical.txt`, which remains the authority surface for all execution semantics.
+
+---
+
+## Input Wrappers
+
+PA_PVP inputs are structured with optional wrappers that control batch-level settings, per-item metadata, execution mode, and state continuity. You can omit all wrappers for a first run — the kernel applies defaults and PLAN mode automatically.
+
+### Batch Header `<<<B ...>>>`
+
+The batch header is optional. When present, it sets defaults for all items in the run. Per-item wrappers can override individual fields.
+
+```text
+<<<B keep_open=NO expire_days=30 exec_capability=NO_RUNTIME close_policy=SIM_OK ssot_scale=MIN resource_pool=>>>
+```
+
+<ParamField query="keep_open" type="YES | NO" default="NO">
+  When `YES`, expiry is disabled for all items in the batch (no EXPIRED transitions). Per-item `keep_open` overrides this.
+</ParamField>
+
+<ParamField query="expire_days" type="integer" default="30">
+  Default inactivity window in days before a STANDBY item transitions to EXPIRED. Overridden by per-item `expire_days` or domain expiry defaults when those apply.
+</ParamField>
+
+<ParamField query="exec_capability" type="NO_RUNTIME | RUNTIME_OK" default="NO_RUNTIME">
+  Controls whether the kernel can attempt live execution. `NO_RUNTIME` means all step outcomes are simulated and labeled `COMPLETED_SIMULATED`. `RUNTIME_OK` enables actual execution with exception handling.
+</ParamField>
+
+<ParamField query="close_policy" type="SIM_OK | REAL_ONLY" default="SIM_OK">
+  Governs what closure tier is allowed. `SIM_OK` allows simulated closure (`ct:SIM`) when real evidence is unavailable. `REAL_ONLY` blocks simulated closure — items without real evidence park in STANDBY with `trigger=CLOSE_BLOCKED_REAL_ONLY`.
+</ParamField>
+
+<ParamField query="ssot_scale" type="MIN | DEBUG" default="MIN">
+  Controls how much item structure is emitted. `MIN` emits minimal structure for clean items, expanding to DEBUG only when contested or when a gate is active. `DEBUG` emits full structure for all items without `<<<PREV>>>`.
+</ParamField>
+
+<ParamField query="resource_pool" type="comma-separated RID:CAPACITY tokens" default="(empty)">
+  Optional resource capacity declaration. Format: `R1:1,R2:2` where each token is `<RID>:<CAPACITY_INT>`. Example IDs from the kernel: `ENG`, `MONEY`, `ATTENTION`, `GPU`. If declared, the kernel enforces resource concurrency rules and may demote ACTIVE items to STANDBY when demand exceeds capacity.
+</ParamField>
+
+---
+
+### Item Wrapper `<<<I ...>>>`
+
+Each decision item is wrapped in `<<<I ...>>>` with its payload and terminated by `<<<END>>>`.
+
+```text
+<<<I id=E1 title="short title" keep_open=NO expire_days=30 depends_on= uses= reversibility=>>>
+...payload...
+<<<END>>>
+```
+
+<ParamField query="id" type="string" required>
+  Short, stable identifier for the item. Must be unique within the batch — a duplicate id causes the second occurrence to be DISCARDED with `trigger=DUPLICATE_ID_REJECTED`. Items missing an id are skipped (`INVALID_ITEM`) without blocking the rest of the batch.
+</ParamField>
+
+<ParamField query="title" type="string">
+  Human-readable label for the item. Used in output surfaces for scan legibility.
+</ParamField>
+
+<ParamField query="keep_open" type="YES | NO" default="NO">
+  Per-item override for `keep_open`. When `YES`, expiry is disabled for this item regardless of the batch setting.
+</ParamField>
+
+<ParamField query="expire_days" type="integer">
+  Per-item expiry window override. Takes precedence over the batch `expire_days`. If absent, falls back to the batch setting, then domain defaults, then 30 days.
+</ParamField>
+
+<ParamField query="depends_on" type="comma-separated id list">
+  Declares execution-order dependencies. Items listed here must be CLOSED or DISCARDED before dependent steps execute. If dependencies are unresolved, Step 1 priority applies and the item receives `trigger=DEPENDENCY_BLOCK`. Circular dependencies within the batch trigger `CIRCULAR_DEPENDENCY` for all items in the cycle.
+</ParamField>
+
+<ParamField query="uses" type="comma-separated RID:UNITS tokens">
+  Declares resource consumption for this item. Format: `R1:1,R2:1`. Only RIDs declared in the batch `resource_pool` are meaningful. The kernel uses these to enforce concurrency limits.
+</ParamField>
+
+<ParamField query="reversibility" type="REVERSIBLE | COSTLY_REVERSIBLE | IRREVERSIBLE">
+  Declares the reversibility of the decision. `IRREVERSIBLE` forces `REAL_ONLY` close policy for the item, regardless of the batch `close_policy`. It also raises `ds=SLOW` in [QUEUE].
+</ParamField>
+
+---
+
+### Mode Tags
+
+Each item uses exactly one mode tag inside its wrapper.
+
+<Tabs>
+  <Tab title="<<<PLAN>>>">
+    ```text
+    <<<PLAN>>>
+    - bullet list of actions/options OR numbered steps
+    ```
+    Standard decision mode. The kernel applies the FAIL-FAST SNR gate before review. If the plan lacks a clear goal state or hard constraint, the kernel auto-derives minimal specs as SIMULATED (in `NO_LOOK`/`AskUserMode=NONE` configurations) or enters CUT MODE after two failed fast-check attempts.
+  </Tab>
+  <Tab title="<<<ARTIFACT>>>">
+    ```text
+    <<<ARTIFACT>>>
+    <prompt / file / protocol / code / doc / etc>
+    ```
+    Triggers structural audit of the artifact using the ARTIFACT AUDIT CONTRACT. The kernel emits `[ARTIFACT_AUDIT]` (three structural checks) and `[AUDIT_EXACT]` (one highest-impact defect, patch, and verification step).
+  </Tab>
+  <Tab title="<<<TOOL>>> + <<<TARGET>>>">
+    ```text
+    <<<TOOL>>>
+    <the analysis tool / standard / checklist>
+    <<<TARGET>>>
+    <the target artifact to audit or optimize>
+    ```
+    TARGET ANALYSIS mode. The tool audits the target; roles do not invert. Emits the same audit blocks as ARTIFACT mode.
+  </Tab>
+</Tabs>
+
+---
+
+### State Injection Tags
+
+<Tabs>
+  <Tab title="<<<PREV>>>">
+    ```text
+    <<<PREV>>>
+    <previous [ITEM id=<same id>] block from a prior PA_PVP output>
+    ```
+    Provides prior state for one item. When present, the kernel switches that item to **delta-only** output (`[DERIVED]`, `[DELTA]`, `[VERDICT_UPDATE]` if changed, `[STEPS]`, `[NEXT]`). Each item in a multi-item batch that needs ping-pong includes its own `<<<PREV>>>` containing only its own prior `[ITEM id=...]` block — not the global `[PANEL]` or `[QUEUE]`.
+  </Tab>
+  <Tab title="SNAPSHOT-AS-INPUT">
+    Paste the entire prior machine code block output as input with no wrappers. The kernel detects it as a PREV_SNAPSHOT (a block containing `STATE: DECISION.*`, `[PANEL]`, `[QUEUE]`, and one or more `[ITEM id=...]` blocks), auto-recovers per-item PREV, and resumes delta-only for all matching ids.
+
+    If you supply both `<<<I ...>>>` wrappers and a PREV_SNAPSHOT in the same input, the kernel auto-recovers `<<<PREV>>>` for matching ids (marking `prev_source=SNAPSHOT_RECOVERED`) and gives full treatment to new ids with no match.
+
+    <Note>
+      Invalid snapshots (`OutputValidity: INVALID` in `[PANEL]`) are not accepted as machine-state input. They are treated as diagnostics only.
+    </Note>
+  </Tab>
+</Tabs>
+
+---
+
+### Evidence and Change Tags
+
+<ParamField query="<<<NEW_EVIDENCE evidence_tier=...>>>" type="HISTORICAL | REAL | EXPERIMENT">
+  Provides new evidence for an item. Required to reopen a CLOSED item — without it (or a `<<<CHANGE>>>` for SIM-closed items), reopening is blocked with `trigger=REOPEN_BLOCKED_NO_DELTA`. The evidence tier feeds into `best_evidence_tier` derivation in `[DERIVED]` and can unlock `ct:REAL` closure.
+</ParamField>
+
+<ParamField query="<<<CHANGE>>>" type="bullet list">
+  Declares what changed in the decision context. Allowed (alongside `<<<NEW_EVIDENCE>>>`) as a trigger to revisit SIMULATED-closed items. Must be a short, observable bullet list — not prose rationale.
+</ParamField>
+
+---
+
+## [PANEL] Fields
+
+`[PANEL]` is the global batch-level state block emitted in every kernel decision run. It appears inside the single machine code block, after `[USER_PANEL]` and before `[QUEUE]`.
+
+| Field | Values | Notes |
+|---|---|---|
+| `Protocol` | `PA_PVP` | Always `PA_PVP`. |
+| `SSOT_STATUS` | Active module manifest | Lists all active modules by name. See [SSOT_STATUS Modules](#ssot_status-modules). |
+| `interaction_ssot` | `PA_PVP \| ADAM \| NONE` | Contract governing interaction-level behavior. Default: `PA_PVP`. |
+| `decision_ssot` | `PA_PVP \| ADAM \| NONE` | Contract governing decision-kernel semantics. Default: `PA_PVP`. |
+| `ExecCapability` | `NO_RUNTIME \| RUNTIME_OK` | Sourced from `<<<B ... exec_capability=...>>>`. Default: `NO_RUNTIME`. |
+| `ClosePolicy` | `SIM_OK \| REAL_ONLY` | Sourced from `<<<B ... close_policy=...>>>`. Default: `SIM_OK`. |
+| `SSOTScale` | `MIN \| DEBUG` | Sourced from `<<<B ... ssot_scale=...>>>`. Default: `MIN`. |
+| `ResourcePool` | Capacity tokens | Optional. Present only if `<<<B ... resource_pool=...>>>` was provided. |
+| `BatchID` | Any stable id | Kernel-assigned stable run identifier. |
+| `Items` | Integer | Total item count in this batch. |
+| `InputInventory` | Per-item parse status | One line per item: `id \| mode \| parsed_ok YES/NO \| missing_fields`. |
+| `StatusCounts` | `DRAFT / ACTIVE / STANDBY / PROBING / CLOSED / EXPIRED / DISCARDED` | Count of items in each lifecycle state. |
+| `PingPongCounts` | `PP_OPEN / PP_CLOSED_THIS_RUN` | `PP_OPEN`: items with open ping-pong (non-terminal). `PP_CLOSED_THIS_RUN`: items that had `<<<PREV>>>` and transitioned to terminal in this run. |
+| `VerdictCounts` | `DO_NOW / DO_LATER / DISCARD` | Count of each verdict across the batch. |
+| `ImpactCounts` | `LOW / MED / HIGH` | Count of items at each impact level. |
+| `Governance` | `FalsificationDebtDrivers n/2 \| ActiveProbes n \| HedgeActionsActive n` | Batch-level governance summary. Debt ceiling cap is 2. |
+| `AskUserMode` | `NONE \| ALLOW` | Derived from the `AskUser` contract switch. Default: `NONE`. |
+| `AskUser` | `NONE` or `<id>: <question>` | If `AskUserMode=ALLOW` and an eligible item exists, contains the single minimal evidence request. Otherwise `NONE`. |
+| `CopyPasteMode` | `NO_LOOK \| MANUAL` | Default: `NO_LOOK`. `NO_LOOK` means users can paste the whole prior output as input without any manual editing. |
+
+### Invalid-Only Fields
+
+These fields appear in `[PANEL]` only when `OutputValidity: INVALID` is set. For valid outputs, omit them entirely.
+
+| Field | Values | Notes |
+|---|---|---|
+| `OutputValidity` | `INVALID` | Present only in invalid outputs. Omitted from valid outputs. |
+| `InvalidReason` | `BATCH_COVERAGE \| CODE_BLOCK_PURITY \| PREV_SURFACE \| OTHER` | Exactly one closed token. |
+| `CoverageDiff` | `missing={...}; extra={...}` | Structured diff. Present only when `InvalidReason=BATCH_COVERAGE`. |
+
+<Warning>
+  Any output whose `[PANEL]` contains `OutputValidity: INVALID` is non-operational. Do not use it as `<<<PREV>>>` or SNAPSHOT-AS-INPUT. Treat it as diagnostics only. When INVALID, the output contains only `STATE: DECISION.TEST.FINAL`, `[USER_PANEL]`, and `[PANEL]` — `[QUEUE]` and `[ITEM id=...]` blocks are omitted.
+</Warning>
+
+---
+
+## [QUEUE] Row Format
+
+`[QUEUE]` is the scan surface for execution — the primary table for routing and scheduling decisions. Each row corresponds to one item.
+
+```text
+id | prev_state->new_state | verdict | impact | urgency | ds:OK/SLOW/NO_TOOL | term:Y/N | ct:SIM/REAL/- | pp:OPEN/CLOSED | exp:VALUE | gate:<TAG> | step1
+```
+
+| Token | Description |
+|---|---|
+| `id` | Item identifier. |
+| `prev_state->new_state` | State transition for this run. E.g., `DRAFT->ACTIVE`. |
+| `verdict` | `DO NOW`, `DO LATER`, or `DISCARD`. |
+| `impact` | `LOW`, `MED`, or `HIGH`. |
+| `urgency` | `LOW`, `MED`, or `HIGH`. |
+| `ds` | **Derived execution mode.** `OK` = normal execution. `SLOW` = execute with caution (probing, contested, irreversible, or debt active). `NO_TOOL` = no execution (DISCARD, FAIL_FAST_CUT, or low-impact non-probing item). |
+| `term` | **Terminal flag.** `Y` if `new_state` is CLOSED, DISCARDED, or EXPIRED. `N` otherwise. |
+| `ct` | **Closure tier.** `SIM` = simulated closure. `REAL` = closure backed by real evidence. `-` = item is not CLOSED. |
+| `pp` | **Ping-pong state.** `OPEN` if the item has `<<<PREV>>>` or is non-terminal. `CLOSED` if terminal. |
+| `exp` | **Expiry.** `exp:N` = effective expiry in days. `exp:NONE` = `keep_open=YES` (no expiry). `exp:PAUSED` = expiry clock paused because an ACTIVE non-expired probe exists. |
+| `gate` | **Dominant gate.** Matches `[ITEM_PANEL].dominant_gate`. See [Gate Vocabulary](/reference/gate-vocabulary) for all gate tokens. |
+| `step1` | **First executable step token** from `[STEPS]`, or `(none)` if the item is terminal or has no steps. |
+
+---
+
+## [USER_PANEL] Fields
+
+`[USER_PANEL]` is a derived scan surface at the top of the code block. It is derived only from `[PANEL]`, `[QUEUE]`, and per-item `[NEXT]` lines. It adds no new semantics and is the first thing to read on any run.
+
+| Field | Description |
+|---|---|
+| `BatchID` | Stable run identifier (matches `[PANEL].BatchID`). |
+| `SummaryCounts` | StatusCounts + VerdictCounts + ImpactCounts on a single line. |
+| `TopGates` | Up to 5 systemic blockers derived from `[QUEUE]` gate tokens. Ordered: impact HIGH first, then ACTIVE/PROBING state, then id lexical. Format: `<id>=<gate>, ...`. |
+| `Now` | List of ids where verdict = `DO NOW`. |
+| `Later` | List of ids where verdict = `DO LATER`. |
+| `Cut` | List of ids where verdict = `DISCARD`. |
+| `NextActions` | Up to 5 lines. Each: `<id>: <NEXT step output token>`. |
+
+<Note>
+  When `[PANEL]` contains `OutputValidity: INVALID`, `[USER_PANEL]` is reduced to diagnostics only: `BatchID`, `OutputValidity`, and `InvalidReason`. It does not require `[QUEUE]` data or per-item summaries in that case.
+</Note>
+
+---
+
+## [ITEM id=...] Blocks
+
+Each item in the output has a dedicated `[ITEM id=...]` block. The sub-blocks present depend on whether `<<<PREV>>>` exists, the item's profile, ssot_scale, and which gates are active.
+
+### When `<<<PREV>>>` exists (delta-only)
+
+Only these sub-blocks appear (PREV_DELTA_SURFACE rule):
+
+<Steps>
+  <Step title="[DERIVED]">
+    Short derived fields only: `item_exec_mode`, `terminal`, `closure_tier`, `best_evidence_tier`, `events`, `reopen_total`, `effective_expire_days`, `output_mode`. Optional: `counters`.
+  </Step>
+  <Step title="[DELTA]">
+    Peer ping-pong delta output. Contains exactly one `[BREAK]` (the single driver or relationship with the highest cost-benefit impact that is wrong) and one `[PATCH]` (the minimal update that increases expected net benefit or confidence). The DELTA must include a causal reference to a named driver, impact-graph relationship, probe id, or specific evidence item — otherwise the output is `INVALID_DELTA`.
+  </Step>
+  <Step title="[VERDICT_UPDATE]">
+    Present only if the verdict changed versus PREV.
+  </Step>
+  <Step title="[STEPS]">
+    Updated steps (max 5), in step grammar: `S{n}: <OBSERVABLE_VERB> <OBJECT> -> <OUTPUT> | timebox<=<N>m | fail_if=<OBSERVABLE_CONDITION>`.
+  </Step>
+  <Step title="[NEXT]">
+    Exactly one step from `[STEPS]`. Must match an emitted step — cannot invent a new action.
+  </Step>
+</Steps>
+
+### When no `<<<PREV>>>` exists (full output)
+
+Sub-blocks depend on the per-item output scale. Scale is `DEBUG` when `ssot_scale=DEBUG`, `contested=YES`, or `dominant_gate != NONE`. Otherwise scale is `MIN`.
+
+**Sub-blocks available in all non-PREV outputs:**
+
+| Sub-block | When emitted | Description |
+|---|---|---|
+| `[ITEM_PANEL]` | Always | Per-item metadata: `id`, `title`, `mode`, `profile`, `domain_type`, `state`, `verdict`, `impact`, `urgency`, plus optional fields (`score`, `critical_driver`, `dominant_gate`, `trigger`, `falsification_debt`, `reversibility`, `uses`, etc.). |
+| `[DERIVED]` | Always | Derived fields matching `[QUEUE]` tokens, plus `best_evidence_tier`, `events`, `reopen_total`, `effective_expire_days`, `output_mode`. |
+| `[STEPS]` | Always | Up to 5 executable steps in the step grammar (S1..S5). |
+| `[NEXT]` | When not terminal | Exactly one step from `[STEPS]`. |
+| `[PROBE_LOG]` | When PROBING, or (profile != DIY AND debt != NONE AND current/prior probe entries exist) | Probe entries for this item. |
+| `[ARTIFACT_AUDIT]` | ARTIFACT and TARGET modes only | Three structural checks: `audit_1_completeness`, `audit_2_coherence`, `audit_3_operationality`, plus `top_defects` (max 5) and `top_deltas` (max 5). |
+
+**Additional sub-blocks in DEBUG scale only:**
+
+| Sub-block | Description |
+|---|---|
+| `[DECISION_MODEL]` | Domain type, decision drivers, critical driver, impact graph, assumptions, evidence, uncertainties. |
+| `[EVIDENCE_BINDING]` | Per-dimension (Benefit/Cost/Risk/CostOfDelay): rating, drivers, confidence, evidence_tier. |
+| `[DATA_ACQUISITION]` | Ordered data acquisition steps by information ROI. |
+| `[ALTERNATIVE]` | Conditional: alternative paths considered. |
+| `[REVIEW]` | Max 3 failure modes. |
+
+### [ITEM_PANEL] Critical Fields
+
+These fields within `[ITEM_PANEL]` are the most important for routing and governance:
+
+| Field | Description |
+|---|---|
+| `critical_driver` | The single driver with the highest impact on Score/Impact. |
+| `dominant_gate` | The single active governance gate. See [Gate Vocabulary](/reference/gate-vocabulary). |
+| `critical_driver_confidence` | `HIGH \| MED \| LOW \| VERY LOW`. Capped deterministically by evidence tier, domain type, and probe governance. |
+| `falsification_debt` | `NONE` or `OPEN(<driver>)`. Opened when a critical driver has low confidence and no adequate probe protects it. |
+| `reversibility` | `REVERSIBLE \| COSTLY_REVERSIBLE \| IRREVERSIBLE`. |
+| `contested` | `YES \| NO`. If YES, forces `ds=SLOW` and `dominant_gate != NONE`. |
+| `hedge_action` | `ACTIVE \| NO`. Hedge actions allowed only under strict conditions (HIGH Cost of Delay, reversible/risk-contained, parallel probe, declared debt). |
+| `missing_ratings` | `YES \| NO`. Set when any Benefit/Cost/Risk/CostOfDelay rating is missing. Forces defaults and prevents CLOSED transition (except LOW impact). |
+| `reopen_total` | `0..N`. Authoritative anti-loop counter. If `reopen_total >= 1` in PREV, reopening is blocked with `trigger=REOPEN_BLOCKED_BUDGET`. |
+
+---
+
+## SSOT_STATUS Modules
+
+`[PANEL].SSOT_STATUS` lists all active modules in the kernel as a compact manifest. All 22 entries below are active in `PA_PVP_full_v9.9.0_canonical.txt`:
+
+| Module | Status |
+|---|---|
+| `InteropLayer` | ACTIVE |
+| `Batch` | ACTIVE |
+| `PingPong` | ACTIVE |
+| `Scoring` | ACTIVE |
+| `Lifecycle` | ACTIVE |
+| `Debt` | ACTIVE |
+| `RealityProbe` | ACTIVE |
+| `RepresentativenessLite` | ACTIVE |
+| `HedgeAction` | ACTIVE |
+| `TruthOrDare` | ACTIVE |
+| `AlternativeSearch` | ACTIVE |
+| `EvidenceQualityTier` | ACTIVE |
+| `Contestation` | ACTIVE |
+| `Dependencies` | ACTIVE |
+| `OutputConsumerContract` | ACTIVE |
+| `DomainExpiryDefaults` | ACTIVE |
+| `ProbeTTL` | ACTIVE |
+| `ExpiryPauseWithActiveProbe` | ACTIVE |
+| `MissingRatingsHandling` | ACTIVE |
+| `ArtifactMode` | ACTIVE |
+| `TargetAnalysisMode` | ACTIVE |
+| `SNRGate` | ENFORCED_PLAN_ONLY |
+
+<Note>
+  `[RECOVERY_INPUT]` is optional and emitted only when explicitly requested. It contains input wrappers (`<<<B>>>` / `<<<I>>>` / `<<<PLAN>>>` / `<<<PREV>>>` / `<<<END>>>`) for re-submission. Each `<<<PREV>>>` inside `[RECOVERY_INPUT]` contains only the prior `[ITEM id=...]` block for the matching id. In normal no-look workflows, prefer SNAPSHOT-AS-INPUT over `[RECOVERY_INPUT]`.
+</Note>

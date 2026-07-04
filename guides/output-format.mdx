@@ -1,0 +1,177 @@
+---
+title: "PA_PVP Output Format: Machine Block and Human Table"
+sidebarTitle: "Output Format"
+description: "Every PA_PVP run produces exactly one machine code block containing the decision state and a derived human table for scanning. Only the code block is machine state."
+---
+
+Every PA_PVP decision run produces exactly two output surfaces: a single machine code block and a derived human table. The code block is the source of truth — it is the state you paste back on the next run. The human table is a scan-friendly rendering derived from the code block; it adds no new semantics and is never used as machine input.
+
+## The state header
+
+The first line inside the code block must be:
+
+```text
+STATE: DECISION.TEST.FINAL
+```
+
+If this line is missing, the output is **NON-OPERATIONAL** and must not be used to execute steps or as `<<<PREV>>>` input. Any output lacking the state header is treated as a failed run.
+
+## Code block section order
+
+The machine code block always follows this section order:
+
+```text
+STATE: DECISION.TEST.FINAL
+
+[USER_PANEL]
+...
+
+[PANEL]
+...
+
+[QUEUE]
+...
+
+[ITEM id=E1]
+...
+```
+
+`[RECOVERY_INPUT]` is optional and appears only when explicitly requested — it is not part of the default output. One `[ITEM id=...]` block is emitted per item, in input order.
+
+## [USER_PANEL]
+
+`[USER_PANEL]` is present in every output. It is derived entirely from `[PANEL]`, `[QUEUE]`, and per-item `[NEXT]` lines and adds no new semantics. It is the operator-facing summary.
+
+| Field | Description |
+|---|---|
+| `BatchID` | Stable identifier for this batch run. |
+| `SummaryCounts` | Single line combining `StatusCounts` (DRAFT / ACTIVE / STANDBY / PROBING / CLOSED / EXPIRED / DISCARDED), `VerdictCounts` (DO_NOW / DO_LATER / DISCARD), and `ImpactCounts` (LOW / MED / HIGH). |
+| `TopGates` | Up to 5 systemic blockers derived from `[QUEUE]` gate tokens, ordered by impact (HIGH first), then by active state (ACTIVE/PROBING first), then id lexical. Format: `<id>=<gate>, <id>=<gate>, ...` |
+| `Now` | Ids where `verdict=DO NOW`, one line. |
+| `Later` | Ids where `verdict=DO LATER`, one line. |
+| `Cut` | Ids where `verdict=DISCARD`, one line. |
+| `NextActions` | Up to 5 lines, each formatted as `<id>: <NEXT step output token>`. |
+
+When `[PANEL]` contains `OutputValidity: INVALID`, `[USER_PANEL]` is reduced to diagnostics only: `BatchID`, `OutputValidity`, and `InvalidReason`. It does not require `[QUEUE]` or per-item summaries in that case.
+
+## [PANEL]
+
+`[PANEL]` contains governance state for the entire batch run. Key fields:
+
+| Field | Description |
+|---|---|
+| `Protocol` | Always `PA_PVP`. |
+| `ExecCapability` | `NO_RUNTIME` or `RUNTIME_OK` — from `<<<B exec_capability=...>>>`, default `NO_RUNTIME`. |
+| `ClosePolicy` | `SIM_OK` or `REAL_ONLY` — from `<<<B close_policy=...>>>`, default `SIM_OK`. |
+| `SSOTScale` | `MIN` or `DEBUG` — from `<<<B ssot_scale=...>>>`, default `MIN`. |
+| `AskUserMode` | `NONE` or `ALLOW` — derived from the `AskUser` contract switch, default `NONE`. |
+| `CopyPasteMode` | Default `NO_LOOK` — users can paste the whole prior output as input without manual editing. |
+| `SSOT_STATUS` | Compact active-module manifest listing all kernel modules as `MODULE=ACTIVE` or `MODULE=ENFORCED_*`. |
+
+`OutputValidity` is **only present when the output is invalid**. For valid outputs, omit it. When present:
+
+| Invalid field | Description |
+|---|---|
+| `OutputValidity` | `INVALID` |
+| `InvalidReason` | One of: `BATCH_COVERAGE`, `CODE_BLOCK_PURITY`, `PREV_SURFACE`, or `OTHER`. |
+| `CoverageDiff` | Structured diff `missing={...}; extra={...}` — only present when `InvalidReason=BATCH_COVERAGE`. |
+
+## [QUEUE]
+
+`[QUEUE]` is the primary scan surface for execution. Every input item id must appear here (batch coverage rule). Format:
+
+```text
+id | prev_state->new_state | verdict | impact | urgency | ds:OK/SLOW/NO_TOOL | term:Y/N | ct:SIM/REAL/- | pp:OPEN/CLOSED | exp:VALUE | gate:<TAG> | step1
+```
+
+| Column | Description |
+|---|---|
+| `id` | Item id. |
+| `prev_state->new_state` | State transition for this run (e.g., `DRAFT->ACTIVE`). |
+| `verdict` | `DO NOW`, `DO LATER`, or `DISCARD`. |
+| `impact` | `LOW`, `MED`, or `HIGH`. |
+| `urgency` | `LOW`, `MED`, or `HIGH`. |
+| `ds` | Derived execution mode: `OK` (normal), `SLOW` (contested, probing, or high-risk), `NO_TOOL` (discarded or low-impact non-probing). |
+| `term` | `Y` if new state is `CLOSED`, `DISCARDED`, or `EXPIRED`; otherwise `N`. |
+| `ct` | Closure tier: `SIM` (simulated), `REAL` (backed by real/historical/experimental evidence), or `-` (not closed). |
+| `pp` | `OPEN` (item has prior state or is non-terminal), `CLOSED` (item is in a terminal state). |
+| `exp` | Effective expiry: `N` days, `NONE` (keep_open=YES), or `PAUSED` (expiry paused by an active probe). |
+| `gate` | Dominant gate tag (e.g., `NONE`, `FALSIFICATION`, `DEBT_CEILING`, `EXTERNAL_BLOCK`). |
+| `step1` | First step token — the scan-friendly label of the current `[NEXT]` action. |
+
+## [ITEM id=...] blocks
+
+One `[ITEM id=...]` block is emitted per item, in input order. The depth of each block depends on scale mode and item state:
+
+**MIN_SURFACE** (profile=DIY or impact=LOW, and not in PROBING): emits only `[ITEM_PANEL]`, `[DERIVED]` (base fields), `[STEPS]`, and `[NEXT]`. Richer blocks are forbidden unless the item is in PROBING or carries falsification debt with existing probe entries.
+
+**MIN scale** (default, no `<<<PREV>>>`): emits `[ITEM_PANEL]`, `[DERIVED]`, `[STEPS]`, conditional `[PROBE]` and `[PROBE_LOG]`, and `[NEXT]`.
+
+**DEBUG scale** (when `ssot_scale=DEBUG`, `contested=YES`, or `dominant_gate != NONE`): emits the full structure including `[DECISION_MODEL]`, `[EVIDENCE_BINDING]`, `[DATA_ACQUISITION]`, `[ALTERNATIVE]`, `[PROBE]`, `[PROBE_LOG]`, `[REVIEW]`, and `[NEXT]`.
+
+**Delta-only** (when `<<<PREV>>>` exists): emits only `[DERIVED]`, `[DELTA]`, `[VERDICT_UPDATE]` (if changed), `[STEPS]`, and `[NEXT]`.
+
+Key sub-blocks:
+
+| Block | Description |
+|---|---|
+| `[ITEM_PANEL]` | Per-item governance snapshot: id, title, mode, profile, domain_type, state transition, verdict, impact, urgency, critical_driver, dominant_gate, trigger, falsification_debt, and why. |
+| `[DERIVED]` | Derived short fields: item_exec_mode, terminal, closure_tier, best_evidence_tier, events, reopen_total, effective_expire_days, output_mode, and optional counters. |
+| `[STEPS]` | Ordered executable steps (max 5). |
+| `[NEXT]` | Single next action token — must match one emitted step. |
+| `[DELTA]` | In delta-only mode: one `[BREAK]` and one `[PATCH]`. |
+
+## Step grammar
+
+Steps are executable or measurable actions. The required format is:
+
+```text
+S{n}: <OBSERVABLE_VERB> <OBJECT> -> <OUTPUT> | timebox<=<N>m | fail_if=<OBSERVABLE_CONDITION>
+```
+
+`[NEXT]` must reference one step that was emitted in `[STEPS]`. It cannot invent a new action not present in `[STEPS]`. If more than five steps are needed, the kernel emits the first five executable steps (after applying Step 1 priority) or splits independent sub-goals into separate items.
+
+## [HUMAN_TABLE]
+
+The human table appears after the code block as a standard markdown table. It is derived only from `[QUEUE]` lines and adds no new semantics.
+
+| Column | Source |
+|---|---|
+| `id` | Item id |
+| `verdict` | From `[QUEUE]` |
+| `impact` | From `[QUEUE]` |
+| `urgency` | From `[QUEUE]` |
+| `ds` | From `[QUEUE]` |
+| `term` | From `[QUEUE]` |
+| `ct` | From `[QUEUE]` |
+| `gate` | From `[QUEUE]` |
+| `state` | `prev_state->new_state` from `[QUEUE]` |
+| `exp` | From `[QUEUE]` |
+| `next` | Step1 token from `[QUEUE]`, or `(none)` |
+
+<Warning>
+  The human table is **not machine state**. Never paste only the table back as input. The kernel's SNAPSHOT-AS-INPUT routing requires the full code block with `STATE: DECISION.*`, `[PANEL]`, `[QUEUE]`, and `[ITEM id=...]` blocks. The table is ignored when a snapshot is recovered.
+</Warning>
+
+## Optional output blocks
+
+After the human table, additional derived-only blocks may appear. These are rendering aids and are ignored by SNAPSHOT-AS-INPUT:
+
+| Block | Description |
+|---|---|
+| `[HUMAN_TABLE_OPS]` | Extended operational table with columns: pri, item, verdict, driver, gate, ct, evid, conf, debt, probe, load, next. Includes an optional ACTIONS / WATCH / WAITING footer. |
+| `[RISK_DASHBOARD]` | Batch-level aggregated risk view grouped by critical driver, showing low-confidence items, impact weights, debt status, and gates. |
+| `[PROBE_LOG]` | Per-item probe history emitted when an item is in PROBING state or carries falsification debt with existing probe entries. |
+| `[ARTIFACT_AUDIT]` | Emitted for ARTIFACT and TARGET mode items; contains structural audit findings. |
+| `[DELTA]` | Emitted in delta-only mode; contains one `[BREAK]` and one `[PATCH]` per iteration. |
+
+## Invalid output
+
+When `[PANEL]` contains `OutputValidity: INVALID`, the output is diagnostic only. The normal output structure exception applies: `[QUEUE]` and `[ITEM id=...]` blocks are omitted. The code block contains only `STATE: DECISION.TEST.FINAL`, `[USER_PANEL]`, and `[PANEL]`.
+
+Two invalidation reasons:
+
+- **`BATCH_COVERAGE`**: one or more input ids are missing from `[QUEUE]` or `[ITEM id=...]`, or extra ids appear that were not introduced by an explicit split.
+- **`CODE_BLOCK_PURITY`**: forbidden content (narrative, explanations, draft prose, diff bodies, rationale paragraphs) appeared inside the single machine code block.
+
+When you receive an invalid output, treat it as a diagnostic signal only. Do not reuse it as `<<<PREV>>>` and do not recover snapshot state from it. Start a fresh run or diagnose the coverage or purity issue before continuing.

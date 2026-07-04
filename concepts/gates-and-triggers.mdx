@@ -1,0 +1,109 @@
+---
+title: "Gates, Triggers, and Dominant Gate Routing"
+sidebarTitle: "Gates & Triggers"
+description: "PA_PVP assigns one dominant gate per item to route it through the correct governance path. Gates encode the primary reason an item is contested, blocked, or risky."
+---
+
+When PA_PVP processes an item it may detect that multiple governance rules are active at once — a probe is running, a dependency is unresolved, and the decision score is near a threshold boundary. Rather than letting these conditions pile up into ambiguous output, the kernel reduces them to a single `dominant_gate` per item. The dominant gate is the primary diagnostic and routing signal: it tells downstream executors and peer agents the single most important reason an item is constrained, and it determines how the item behaves in `[QUEUE]`, in `[STEPS]`, and in the `ds` execution mode field.
+
+## Gate vocabulary
+
+PA_PVP defines exactly ten gate values. The gate is derived from the item's active trigger — it never introduces new semantics beyond what the trigger already encodes.
+
+| Gate | Meaning |
+|------|---------|
+| `FAIL_FAST_CUT` | The plan was cut because it failed the SNR gate twice (missing goal state or hard constraint on second occurrence) |
+| `FALSIFICATION` | A reality probe contradicted the critical driver; Falsification Principle applies |
+| `DEBT_CEILING` | Falsification debt has reached the two-driver cap; this item is blocked from opening a third debt driver |
+| `FRAGILITY` | The decision score is near an impact threshold boundary; the item must probe before closing |
+| `DEPENDENCY_BLOCK` | A declared dependency is not yet `CLOSED` or `DISCARDED`, blocking execution |
+| `CONFIDENCE_CAP` | Critical driver confidence was downgraded because a cap rule applied (e.g. from a dependency waiver, contested status, or evidence tier mismatch) |
+| `EXTERNAL_BLOCK` | The item requires external data or a real-world action before it can proceed |
+| `REDESIGN_TRIGGER` | The probe loop is stalling (repeated INCONCLUSIVE results, near-miss loop, or timebox/complexity budget exceeded); a redesign is required |
+| `SCORE_TRIAGE` | Reserved for explicit score/impact routing when no other governance gate is active |
+| `NONE` | No active governance gate; the item proceeds under normal rules |
+
+## Dominant gate precedence
+
+When more than one gate condition is true in the same run, PA_PVP selects the single highest-priority gate using this strict ordering:
+
+```text
+FAIL_FAST_CUT
+  > FALSIFICATION
+  > DEBT_CEILING
+  > FRAGILITY
+  > DEPENDENCY_BLOCK
+  > CONFIDENCE_CAP
+  > EXTERNAL_BLOCK
+  > REDESIGN_TRIGGER
+  > SCORE_TRIAGE
+  > NONE
+```
+
+The kernel maps triggers to gates using the `DOMINANT_GATE_MAP`. First match wins. For example, `trigger=CIRCULAR_DEPENDENCY` maps to `REDESIGN_TRIGGER`; `trigger=CLOSE_BLOCKED_REAL_ONLY` maps to `EXTERNAL_BLOCK`; triggers beginning with `FAIL_FAST_` map to `FAIL_FAST_CUT`.
+
+## How gates affect execution mode
+
+The `dominant_gate` directly influences the `ds` (derived execution mode) field in `[QUEUE]`:
+
+- `FAIL_FAST_CUT` → `ds=NO_TOOL` (verdict is `DISCARD`; do not execute)
+- `FALSIFICATION` → `ds=NO_TOOL` (verdict is `DISCARD`; Falsification Principle forces cut)
+- `DEBT_CEILING` → `ds=SLOW` (item carries open falsification debt)
+- `FRAGILITY` → `ds=SLOW` (item enters `PROBING`; outcome is provisional)
+- `DEPENDENCY_BLOCK` → `ds=SLOW` (blocked; cannot advance without resolving dependency)
+- `CONFIDENCE_CAP` → `ds=SLOW` (confidence was downgraded; caution required)
+- `EXTERNAL_BLOCK` → `ds=SLOW` (external reality required before proceeding)
+- `REDESIGN_TRIGGER` → `ds=SLOW` (probe or plan redesign needed before closing)
+
+The gate is diagnostic. It does not invent new execution semantics — it surfaces the single most important condition already present in the item's state.
+
+<Warning>
+`SCORE_TRIAGE` must not be used merely to expand output scale or trigger more verbose output. It is reserved exclusively for cases where the score or impact bucket is the only active reason changing the item's priority, queue position, or verdict, and no blocking or governance trigger is active.
+</Warning>
+
+## Fragility gate
+
+**Definition (FULL profile):** A score is fragile (`FRAGILE_SCORE=TRUE`) when the Decision Score is within 5 points of an impact threshold — specifically a score in the range 35–45 (near the 40 boundary) or 65–75 (near the 70 boundary).
+
+**Definition (DIY profile):** A score is fragile when the Raw score sits on a boundary value — `Raw` in `{0, 1, 3, 4}`.
+
+**When FRAGILE_SCORE applies:**
+- If `FRAGILE_SCORE=TRUE` and `impact` is not `LOW`, the item enters `PROBING` instead of closing. The kernel prioritizes a cheap-first internal simulation or probe targeting the critical driver.
+- The item does not finalize to `CLOSED` in this run unless the probe resolves the boundary.
+- `trigger=FRAGILITY` is set (unless a higher-priority trigger already governs the item).
+
+**Cost of Delay exception:** If `Cost of Delay` is `HIGH`, a Hedge-Action may be allowed (with risk cap, parallel probe, and declared Falsification Debt). Even so, the item remains in `PROBING` — it does not move directly to `CLOSED`.
+
+## Fail-fast gate
+
+The SNR (Signal-to-Noise Ratio) gate applies **only in PLAN mode**. It fires when a plan input is missing:
+
+- a clear goal state, **or**
+- a hard constraint
+
+**First failure:** The kernel increments `fail_fast_count` for that item id.
+- In `NO_LOOK` or `AskUserMode=NONE` mode, the kernel auto-derives the three minimal specs (`Goal state`, `System boundary`, `Hard constraint`) as `SIMULATED` and continues — it does not ask the operator or stop the run.
+- In `MANUAL` mode with `AskUserMode=ALLOW`, the kernel requests the minimal specs and stops that item in `DRAFT` state.
+
+**Second failure:** When `fail_fast_count` reaches 2, the kernel triggers `FAIL_FAST_CUT`. The item's verdict is `DISCARD`, its state becomes `DISCARDED`, and no further analysis or questions are emitted for it.
+
+## Redesign triggers
+
+A `REDESIGN_TRIGGER` fires when the probe loop or the plan structure is stalling with no productive progress. Any one of these conditions is sufficient:
+
+<CardGroup cols={2}>
+  <Card title="Probe cycle stall" icon="rotate">
+    `probe_cycle_total >= 2` and the critical driver confidence is still `LOW` or `MED` with evidence still `SIMULATED` or `DERIVED` — the probe loop has not upgraded confidence after two complete probe cycles.
+  </Card>
+  <Card title="Unchanged uncertainty" icon="triangle-exclamation">
+    The same critical uncertainty remains `MED` for two consecutive iterations with no new `evidence_tier` upgrade — no progress has been made.
+  </Card>
+  <Card title="Repeated INCONCLUSIVE" icon="circle-xmark">
+    `probe.status=INCONCLUSIVE` repeats 2 times in a row for the same `target_driver` — the probe harness is not producing useful signal.
+  </Card>
+  <Card title="Near-miss loop" icon="gauge-high">
+    `near_miss_total >= 2` with `best_evidence_tier` still in `{SIMULATED, DERIVED}` — the kill-switch is being triggered narrowly under simulated conditions, indicating structural fragility.
+  </Card>
+</CardGroup>
+
+When a redesign trigger fires, the kernel selects exactly one redesign path in priority order: (A) redesign the probe with a changed metric, constraint signature, or kill-switch; (B) split the decision if multiple independent drivers exist; (C) park in `STANDBY` if no bounded redesign path is available; (D) `DISCARD` only if a higher-priority terminal rule already forces it.

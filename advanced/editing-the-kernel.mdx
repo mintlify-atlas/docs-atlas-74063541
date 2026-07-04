@@ -1,0 +1,155 @@
+---
+title: "Editing and Extending the PA_PVP Kernel"
+sidebarTitle: "Editing the Kernel"
+description: "Guidelines for modifying the PA_PVP behavioral contract while preserving its deterministic routing, snapshot compatibility, and output contract."
+---
+
+The PA_PVP kernel is a behavioral contract, not a prose article. Every rule in it is meant to produce a deterministic routing decision — a specific verdict, trigger, gate, or step — given a specific input state. Changes that introduce ambiguity, vague branching, or inconsistent gate mappings will cause divergent outputs across LLM runs and break the snapshot-as-input / ping-pong loop that downstream consumers depend on. Edit with that constraint foremost in mind.
+
+<Warning>
+If the `STATE: DECISION.TEST.FINAL` header or any part of the output format contract is broken, all downstream `SNAPSHOT_AS_INPUT` and ping-pong runs will fail. Outputs missing the STATE header are `NON-OPERATIONAL` and must not be used for execution.
+</Warning>
+
+## Guiding principles
+
+The following principles come directly from the kernel and README. They apply to any change, regardless of scope.
+
+<CardGroup cols={2}>
+  <Card title="Execution rules belong in the kernel" icon="microchip">
+    Keep deterministic routing logic inside the `.txt` kernel file. Keep human explanation, rationale, and examples inside the README. Do not mix them.
+  </Card>
+  <Card title="No version metadata in the kernel" icon="tag">
+    Avoid embedding version numbers, packaging text, or changelog notes inside the kernel body. Version information belongs in the filename and external documentation.
+  </Card>
+  <Card title="Prefer deterministic branches" icon="code-branch">
+    Every conditional in the kernel must map to a single, observable outcome. Replace vague guidance ("consider", "may want to") with explicit branches that produce one deterministic result.
+  </Card>
+  <Card title="Keep AskUser gated" icon="lock">
+    The `AskUser` behavior must remain fully controlled by the contract switch. The kernel must never ask the operator for input when `AskUser=OFF` (the default).
+  </Card>
+  <Card title="Non-fabricating missing source handling" icon="ban">
+    If a step or claim depends on missing source text, the kernel must acquire, park, or discard — never reconstruct or invent the missing content from prose.
+  </Card>
+  <Card title="Preserve snapshot-as-input and delta-only ping-pong" icon="rotate">
+    Any change that alters the output format, block names, or field order must be tested to confirm that a prior output can still be pasted back as valid `SNAPSHOT_AS_INPUT` and processed as delta-only.
+  </Card>
+</CardGroup>
+
+## What to change and what to leave alone
+
+<Tabs>
+  <Tab title="Safe to change">
+    These areas can be modified without breaking the core output contract:
+
+    - **Gate derivation precedence** — if you have a new governance layer that should rank above or below an existing gate in `DOMINANT_GATE_MAP`, you may update the precedence order. Update the map and the precedence list consistently.
+    - **Domain expiry defaults** — the per-domain `expire_days` defaults (Chaotic → 1 day, Probabilistic → 7 days, etc.) can be adjusted to fit your operational context.
+    - **Scoring weights** — the `B`, `C`, `R`, `D` coefficients in the FULL and DIY scoring formulas can be retuned if your domain has different cost/benefit dynamics.
+    - **Resource vocabulary** — the closed-vocabulary RID examples (`ENG`, `MONEY`, `ATTENTION`, `GPU`) are illustrative. You may define your own RIDs as long as they remain short, stable identifiers.
+  </Tab>
+  <Tab title="Do not change">
+    These areas are load-bearing for the output contract and snapshot compatibility:
+
+    - **STATE header** — `STATE: DECISION.TEST.FINAL` must appear as the first line of every machine code block. Do not rename or reformat it.
+    - **Output format rules** — section order (`[USER_PANEL]`, `[PANEL]`, `[QUEUE]`, `[ITEM id=...]`) and the single-code-block requirement must be preserved. Downstream consumers rely on exact block names.
+    - **BATCH_COVERAGE contract** — the coverage rule (every input id must appear in `[QUEUE]` and as `[ITEM id=...]`) enforces output integrity. Relaxing it silently drops items.
+    - **SNAPSHOT_AS_INPUT routing** — the routing logic that auto-recovers `<<<PREV>>>` from a pasted snapshot is what makes the no-look copy-paste loop work. Do not alter the detection heuristics.
+    - **CODE_BLOCK_PURITY rules** — free narrative, explanations, and rationale paragraphs are forbidden inside the machine code block. This keeps the block machine-parseable.
+  </Tab>
+</Tabs>
+
+## Adding new gate values
+
+The gate vocabulary is **closed**. The allowed values are:
+
+```text
+FAIL_FAST_CUT | FALSIFICATION | DEBT_CEILING | FRAGILITY |
+DEPENDENCY_BLOCK | CONFIDENCE_CAP | EXTERNAL_BLOCK |
+REDESIGN_TRIGGER | SCORE_TRIAGE | NONE
+```
+
+`SCORE_TRIAGE` is reserved for explicit score/impact routing only. It must not be used merely to expand output scale.
+
+To add a genuinely new gate:
+1. Add the gate token to the allowed values list.
+2. Add a mapping rule in `DOMINANT_GATE_MAP` (trigger → gate).
+3. Insert the gate at the correct position in the derivation precedence order — higher entries take priority over lower entries when multiple conditions are simultaneously true.
+4. Ensure the new gate has at least one trigger that maps to it deterministically.
+
+All four changes must be made in the same edit. An orphaned gate (in the allowed list but absent from `DOMINANT_GATE_MAP`) or an orphaned mapping (in `DOMINANT_GATE_MAP` but absent from the allowed list) is a structural error.
+
+## Versioning
+
+The canonical filename follows this convention:
+
+```text
+PA_PVP_full_v{MAJOR}.{MINOR}.{PATCH}_canonical.txt
+```
+
+Suggested version bump policy:
+
+| Change type | Bump |
+|---|---|
+| Rule clarification, comment, or documentation-only edit | PATCH |
+| New gate value, changed precedence, adjusted scoring weights, or new expiry defaults | MINOR |
+| Breaking change to output format, block names, or snapshot routing | MAJOR |
+
+A breaking output format change (MAJOR bump) requires all downstream consumers to update their `SNAPSHOT_AS_INPUT` parsing. Coordinate before publishing.
+
+## Testing changes
+
+There is no automated test runner bundled with the kernel. The recommended approach is manual regression testing against a known-good set of inputs.
+
+<Steps>
+  <Step title="Build a reference input set">
+    Collect inputs that exercise the rules you changed — at minimum: a single-item PLAN run, a multi-item batch with dependencies, an item with a prior `<<<PREV>>>`, and a `SNAPSHOT_AS_INPUT` run where you paste a prior output directly.
+  </Step>
+  <Step title="Run the modified kernel and compare [QUEUE] outputs">
+    Load the modified kernel into an LLM and run each reference input. For each run, compare the `[QUEUE]` lines against the expected outputs from the unmodified kernel. Verdict, gate, trigger, and state transitions should match unless the change deliberately alters them.
+  </Step>
+  <Step title="Verify BATCH_COVERAGE is maintained">
+    Confirm that every input id appears in both `[QUEUE]` and as a `[ITEM id=...]` block. No id should be silently dropped or duplicated.
+  </Step>
+  <Step title="Verify STATE header is preserved">
+    In every output, confirm the first line of the code block is exactly `STATE: DECISION.TEST.FINAL`. A missing or altered header makes the output NON-OPERATIONAL.
+  </Step>
+  <Step title="Verify SNAPSHOT_AS_INPUT still works">
+    Paste a prior run's full output (the code block and the human table) as the next run's input with no wrappers. Confirm the kernel auto-recovers `<<<PREV>>>` for each item and processes the run as delta-only ping-pong.
+  </Step>
+</Steps>
+
+## Contract bridge fields
+
+Two fields in `[PANEL]` allow the kernel to delegate governing authority to a different contract:
+
+```text
+interaction_ssot: PA_PVP | ADAM | NONE
+decision_ssot:    PA_PVP | ADAM | NONE
+```
+
+- `interaction_ssot` governs interaction-level behavior (how the kernel communicates with the operator).
+- `decision_ssot` governs decision-kernel semantics (how verdicts, gates, and scoring are derived).
+
+Both default to `PA_PVP`. Setting either to `ADAM` delegates that layer to an ADAM contract. Setting either to `NONE` explicitly removes governing authority for that layer. Changes to these fields are structural — they affect which rules are authoritative — and should be treated with the same care as output format changes.
+
+## License and attribution
+
+PA_PVP is released under **Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)**.
+
+If you publish a modified kernel, you must provide attribution following this recipe:
+
+<Steps>
+  <Step title="Project">
+    PA_PVP - a PLUTONIUM-like Adversarial Peer Validation Protocol
+  </Step>
+  <Step title="Source">
+    Link to the original repository or the specific canonical file (`PA_PVP_full_v9.9.0_canonical.txt`).
+  </Step>
+  <Step title="License">
+    CC BY-SA 4.0
+  </Step>
+  <Step title="Changes">
+    State what you changed. Be specific — "adjusted ENG scoring weights and added a GPU gate value" is better than "modified the kernel".
+  </Step>
+</Steps>
+
+ShareAlike means any derivative work you publish must be released under the same CC BY-SA 4.0 license.

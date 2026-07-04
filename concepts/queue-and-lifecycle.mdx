@@ -1,0 +1,96 @@
+---
+title: "Queue Format and Item Lifecycle in PA_PVP"
+sidebarTitle: "Queue & Lifecycle"
+description: "The [QUEUE] block is the machine scan surface in every PA_PVP output. Each row encodes an item's verdict, state, impact, urgency, gate, and next step token."
+---
+
+Every valid PA_PVP decision run emits exactly one machine code block. Inside that block, `[QUEUE]` is the primary operational scan surface — a compact, structured roster of all items in the batch. Each row encodes the full disposition of one item in a single parseable line. Downstream executors, peer validation agents, and automated tooling all read `[QUEUE]` first to determine what to act on, what to park, and what to ignore.
+
+## Queue row format
+
+Every item appears as one row in `[QUEUE]` using this exact format:
+
+```text
+id | prev_state->new_state | verdict | impact | urgency | ds:OK/SLOW/NO_TOOL | term:Y/N | ct:SIM/REAL/- | pp:OPEN/CLOSED | exp:VALUE | gate:<TAG> | step1
+```
+
+Each field in the row is derived strictly from the item's short-field state — no free narrative is permitted inside the code block.
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `id` | item identifier string | Unique identifier for this item, matching the input wrapper |
+| `prev_state->new_state` | e.g. `DRAFT->ACTIVE` | The lifecycle transition that occurred in this run |
+| `verdict` | `DO NOW` / `DO LATER` / `DISCARD` | The forced verdict for this item |
+| `impact` | `LOW` / `MED` / `HIGH` | Relative impact of the decision |
+| `urgency` | `LOW` / `MED` / `HIGH` | Time sensitivity of the decision |
+| `ds` | `OK` / `SLOW` / `NO_TOOL` | Derived execution mode — whether to proceed, proceed with caution, or skip execution |
+| `term` | `Y` / `N` | `Y` if the item is in a terminal state (`CLOSED`, `DISCARDED`, or `EXPIRED`); otherwise `N` |
+| `ct` | `SIM` / `REAL` / `-` | Closure tier — simulated, evidence-backed, or not closed |
+| `pp` | `OPEN` / `CLOSED` | Ping-pong status — whether the item is still active in the review loop |
+| `exp` | integer / `NONE` / `PAUSED` | Effective expiry in days; `NONE` if `keep_open=YES`; `PAUSED` if an active probe exists |
+| `gate` | gate tag (e.g. `NONE`, `FRAGILITY`) | The dominant governance gate for this item |
+| `step1` | step token string | The first executable step token for this item |
+
+## Derived execution mode (ds)
+
+The `ds` field is derived deterministically from the item's short fields. It tells the executor how to handle the item without reading the full item block.
+
+<Tabs>
+  <Tab title="NO_TOOL">
+    `ds=NO_TOOL` — do not execute steps for this item. Applied when **any** of these conditions hold:
+
+    - `verdict=DISCARD`
+    - `trigger=FAIL_FAST_CUT`
+    - `impact=LOW` AND the item is not in `PROBING` state
+
+    A `NO_TOOL` item should not have its steps executed in this run.
+  </Tab>
+  <Tab title="SLOW">
+    `ds=SLOW` — proceed with caution. Applied when **any** of these conditions hold (and `NO_TOOL` does not apply):
+
+    - `new_state=PROBING` — a probe is active and the outcome is provisional
+    - `contested=YES` — the item is under peer contestation
+    - `missing_ratings=YES` — one or more evidence ratings are absent
+    - `falsification_debt != NONE` — the item carries open falsification debt
+    - `hedge_action=ACTIVE` — a hedge action is in progress
+    - `reversibility=IRREVERSIBLE` — the decision cannot be undone
+    - `domain_type` is `Complex` or `Chaotic` AND `critical_driver_confidence` is `LOW` or `VERY LOW`
+  </Tab>
+  <Tab title="OK">
+    `ds=OK` — proceed normally. Applied when neither `NO_TOOL` nor `SLOW` conditions are active. The item can be executed starting at Step 1 without additional caution flags.
+  </Tab>
+</Tabs>
+
+## Expiry and lifecycle
+
+Items that receive `DO LATER` enter `STANDBY` and are subject to automatic expiry. The effective expiry window is resolved deterministically:
+
+1. If `keep_open=YES` → no expiry (`exp:NONE`)
+2. Else if the item declares `expire_days` → use that value
+3. Else if the batch declares `expire_days` → use that value
+4. Else if `domain_type` is known → apply domain defaults (Chaotic: 1 day; Probabilistic: 7 days; Complex: 60 days; Deterministic: 365 days)
+5. Else → fallback of 30 days
+
+After `effective_expire_days` elapse with no updates, the item transitions from `STANDBY` → `EXPIRED`.
+
+**Expiry pause rule:** If a `STANDBY` item has an `ACTIVE` adopted probe that has not yet expired, the inactivity counter that drives `STANDBY → EXPIRED` is paused. The `[QUEUE]` row will show `exp:PAUSED`. Expiry resumes only when the probe is no longer `ACTIVE`.
+
+**Revival:** If an `EXPIRED` item's id appears in a new batch, it automatically transitions `EXPIRED → DRAFT`. If a `<<<PREV>>>` block is provided, the item continues delta-only; otherwise it gets a full fresh run.
+
+## Ping-pong counts
+
+The `pp` field in each `[QUEUE]` row and the `PingPongCounts` field in `[PANEL]` track the state of the peer review loop.
+
+| Value | Meaning |
+|-------|---------|
+| `pp:OPEN` | The item has a `<<<PREV>>>` block or is not yet in a terminal state; ping-pong loop is still active |
+| `pp:CLOSED` | The item is in a terminal state (`CLOSED` or `DISCARDED`); ping-pong loop has ended |
+
+Two counters appear in `[PANEL]`:
+
+- **`PP_OPEN`** — count of items currently with `pp:OPEN`
+- **`PP_CLOSED_THIS_RUN`** — count of items that had a `<<<PREV>>>` block and transitioned to a terminal state in this run
+
+<Tip>
+The `[HUMAN_TABLE]` block rendered after the machine code block contains the same core data as `[QUEUE]` in a standard markdown table — it is designed for human scanning. However, the `[HUMAN_TABLE]` is derived-only rendering; it is not machine state. When using a PA_PVP output as input to the next run (`SNAPSHOT-AS-INPUT`), the kernel reads only the code block. The human table is ignored.
+</Tip>

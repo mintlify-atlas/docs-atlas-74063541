@@ -1,0 +1,132 @@
+---
+title: "Hedge Actions and Truth-or-Dare in PA_PVP"
+sidebarTitle: "Hedge Actions"
+description: "Hedge actions let PA_PVP take a reversible step under high uncertainty when waiting for data would exceed the opportunity window, alongside a parallel probe and declared debt."
+---
+
+In most cases, the right move under uncertainty is to probe first and act later. But sometimes the cost of waiting exceeds the risk of acting — the opportunity window is closing, a reversible first step is available, and a parallel probe can run. Hedge actions provide a governed path to act under those conditions, with explicit risk containment, declared debt, and a mandatory exit condition.
+
+<Warning>
+Hedge actions always open Falsification Debt. The debt closes only when the parallel probe resolves (`VALIDATED` or `FALSIFIED`) or the item reaches a terminal state (`CLOSED`, `EXPIRED`, or `DISCARDED`). Debt does not clear automatically by the passage of time.
+</Warning>
+
+## Hedge action conditions
+
+A hedge action is only allowed when **all** of the following conditions hold simultaneously:
+
+<CardGroup cols={2}>
+  <Card title="Cost of Delay is HIGH" icon="clock">
+    Waiting for more information must have a HIGH cost — a low or medium cost of delay does not qualify.
+  </Card>
+  <Card title="Window exceeded" icon="hourglass">
+    Waiting for data must exceed the opportunity window. The hedge is not a shortcut around normal probing.
+  </Card>
+  <Card title="Reversible or risk-contained" icon="rotate-left">
+    The proposed action must be either reversible or risk-contained. Hedge actions are not available for irreversible, uncapped moves.
+  </Card>
+  <Card title="Risk cap declared" icon="shield">
+    A concrete risk cap must be explicitly stated — not implied. The cap defines the upper bound of acceptable loss.
+  </Card>
+  <Card title="Parallel probe started" icon="microscope">
+    A Reality Probe targeting the critical driver must start in the same run. The hedge does not substitute for the probe; both run together.
+  </Card>
+  <Card title="Falsification Debt declared" icon="file-invoice">
+    Falsification Debt must be explicitly opened for the critical driver. Undeclared debt is not allowed.
+  </Card>
+</CardGroup>
+
+If any condition is not met, the hedge action is not permitted. The kernel will route the item through normal probing or Truth-or-Dare instead.
+
+## Hedge exit condition
+
+Hedge actions are not open-ended. The hedge terminates automatically when either of these conditions is true:
+
+- `probe.status` transitions to `VALIDATED` or `FALSIFIED`, **OR**
+- the decision transitions to `CLOSED`, `EXPIRED`, or `DISCARDED`
+
+When the hedge terminates, the kernel updates the item state out of `PROBING` — transitioning to `ACTIVE`, `STANDBY`, or `DISCARDED` as appropriate. Falsification Debt is cleared or retained strictly by the debt rules; no manual exceptions are made. A `FALSIFIED` probe triggers the Falsification Principle: `verdict=DISCARD` with `trigger=FALSIFICATION`.
+
+## Truth-or-Dare
+
+Truth-or-Dare is the kernel's lower-cost alternative for handling low-confidence critical drivers when a hedge action does not apply.
+
+**When it triggers:**
+- Critical driver confidence is LOW
+- External data is required
+- Cost of Delay is **not** HIGH
+
+**What the kernel does:**
+
+<Tabs>
+  <Tab title="AskUser=OFF (default)">
+    The kernel does **not** request external data from the operator. Instead, it chooses one of:
+
+    - **Simulate**: run the best internal probe available and proceed, marking `evidence_tier=SIMULATED` with confidence caps applied.
+    - **Park**: transition the item to `STANDBY` with `trigger=EXTERNAL_DATA_REQUIRED` if simulation is insufficient.
+
+    If external data is required but unavailable, the kernel proposes the best internal simulation/probe available. If that is still insufficient, it requires blind-risk acceptance and opens Falsification Debt explicitly.
+  </Tab>
+  <Tab title="AskUser=ON">
+    The kernel may ask for the minimal external evidence needed, but only if the item passes the full AskUser eligibility gates (see below). The question is issued as the single `AskUser` output for this run. If the item is not eligible, the kernel proceeds as in the `AskUser=OFF` path.
+  </Tab>
+</Tabs>
+
+## AskUser contract switch
+
+The `AskUser` switch controls whether the kernel is ever permitted to request missing evidence from the operator.
+
+```text
+AskUser = OFF   ← default; kernel never asks
+AskUser = ON    ← kernel may ask once per output under strict eligibility rules
+```
+
+**Eligibility gates** — all conditions must hold for an item to qualify:
+
+<Steps>
+  <Step title="AskUserMode=ALLOW">
+    The contract switch must be set to `AskUser = ON` (which sets `AskUserMode=ALLOW` for all items).
+  </Step>
+  <Step title="Item is non-terminal">
+    `term='N'` — the item must not be in a terminal state (`CLOSED`, `DISCARDED`, `EXPIRED`).
+  </Step>
+  <Step title="Trigger is an external lock">
+    The item's trigger must be in `EXTERNAL_BLOCK_LOCK_TRIGGERS`:
+    `{BLOCKED_EXTERNAL, EXTERNAL_DATA_REQUIRED, CLOSE_BLOCKED_REAL_ONLY}`
+
+    Equivalently, `dominant_gate=EXTERNAL_BLOCK` under the `DOMINANT_GATE_MAP`.
+  </Step>
+  <Step title="At least one of the extra conditions">
+    At least one of the following must be true:
+    - `ClosePolicy=REAL_ONLY`, **OR**
+    - `reversibility=IRREVERSIBLE`, **OR**
+    - `spent_internal=YES` (i.e., `pc>=1` OR `nm>=2` OR `inc>=1` for the current critical driver)
+  </Step>
+</Steps>
+
+**Selection priority** — if multiple items are eligible, exactly one question is emitted per output, chosen by:
+1. `impact`: HIGH first, then MED, then LOW
+2. `urgency`: HIGH first, then MED, then LOW
+3. `id` lexical order (stable tie-break)
+
+The selected question appears in `[PANEL]` as:
+```text
+AskUser: <id>: <one minimal evidence request>
+```
+
+If no item is eligible, or if `AskUser=OFF`, the panel shows:
+```text
+AskUser: NONE
+```
+
+## When to use hedge actions
+
+Hedge actions are appropriate when:
+- The decision is **time-sensitive** — the opportunity window is genuinely closing.
+- The proposed first step is **reversible** or risk-contained — you can undo or cap the downside.
+- A **parallel probe** can actually run — the probe is not purely theoretical.
+- You are prepared to **declare and track the debt** until the probe resolves.
+
+Hedge actions are **not** appropriate for:
+- `reversibility=IRREVERSIBLE` items without real evidence — the kernel blocks hedge on uncapped irreversible actions.
+- Items where Cost of Delay is not HIGH — use Truth-or-Dare or normal probing instead.
+- Situations where the probe cannot run in parallel — a probe must start in the same run as the hedge.
